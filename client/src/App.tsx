@@ -12,7 +12,20 @@ type ScopedIce = { scope: SignalScope; candidate: RTCIceCandidateInit };
 type FileCtrl = { kind: "meta"; name: string; size: number; mime: string } | { kind: "done" };
 
 /* ─── Config ─── */
-const ICE: RTCIceServer[] = [{ urls: (import.meta.env.VITE_STUN_URL as string) || "stun:stun.l.google.com:19302" }];
+const ICE: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:global.stun.twilio.com:3478" },
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  }
+];
 const TTL = 24 * 60 * 60 * 1000;
 const API = (import.meta.env.VITE_SIGNALING_BASE_URL as string) ?? "http://localhost:4000";
 const THEMES: Theme[] = ["sand", "forest", "sunset"];
@@ -158,7 +171,32 @@ export function App() {
       const { fromUserId, fromUsername, envelope } = pkt;
 
       if (envelope.type === "chat") {
-        const msg: ChatMessage = { id: crypto.randomUUID(), fromUserId, toUserId: session.user.userId, kind:"text", content: String(envelope.payload), ts: Date.now(), expiresAt: envelope.expiresAt??Date.now()+TTL };
+        const payloadStr = String(envelope.payload);
+        let msgContent = payloadStr;
+        let isFile = false;
+        let downloadUrl = "";
+
+        try {
+          if (payloadStr.startsWith('{"type":"file"')) {
+            const parsed = JSON.parse(payloadStr);
+            isFile = true;
+            msgContent = `${parsed.name} (${Math.round(parsed.size / 1024)} KB)`;
+            downloadUrl = parsed.data;
+          }
+        } catch {
+          // treat as text
+        }
+
+        const msg: ChatMessage = {
+          id: crypto.randomUUID(),
+          fromUserId,
+          toUserId: session.user.userId,
+          kind: isFile ? "file-meta" : "text",
+          content: msgContent,
+          downloadUrl: downloadUrl || undefined,
+          ts: Date.now(),
+          expiresAt: envelope.expiresAt ?? Date.now() + TTL
+        };
         setMessages(prev=>[...prev,msg]);
         setContacts(prev => {
           if (prev.find(u=>u.userId===fromUserId)) return prev;
@@ -265,16 +303,42 @@ export function App() {
   }
 
   async function doFileShare(file: File) {
-    if(!session||!selectedUser) return;
-    setMessages(p=>[...p,{id:crypto.randomUUID(),fromUserId:session.user.userId,toUserId:selectedUser.userId,kind:"file-meta",content:`${file.name} (${Math.round(file.size/1024)} KB)`,ts:Date.now(),expiresAt:Date.now()+TTL}]);
-    pendingFileRef.current=file; filePeerRef.current=selectedUser.userId;
-    if(fileChanRef.current?.readyState==="open"){sendPendingFile();return;}
-    fileChanRef.current?.close(); filePcRef.current?.close();
-    const pc=makePc(); filePcRef.current=pc;
-    const c=pc.createDataChannel("file"); setupFileChan(c,session.user.userId);
-    pc.onicecandidate=e=>{if(e.candidate)send({toUserId:selectedUser.userId,type:"ice",payload:{scope:"file",candidate:e.candidate}})};
-    const off=await pc.createOffer(); await pc.setLocalDescription(off);
-    send({toUserId:selectedUser.userId,type:"offer",payload:{scope:"file",sdp:off}});
+    if (!session || !selectedUser) return;
+    if (file.size > 12 * 1024 * 1024) {
+      alert("File is too large. Maximum size is 12MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64Data = reader.result as string;
+      const filePayload = {
+        type: "file",
+        name: file.name,
+        size: file.size,
+        mime: file.type || "application/octet-stream",
+        data: base64Data
+      };
+      const jsonPayload = JSON.stringify(filePayload);
+
+      const localMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        fromUserId: session.user.userId,
+        toUserId: selectedUser.userId,
+        kind: "file-meta",
+        content: `${file.name} (${Math.round(file.size / 1024)} KB)`,
+        downloadUrl: base64Data,
+        ts: Date.now(),
+        expiresAt: Date.now() + TTL
+      };
+
+      setMessages(prev => [...prev, localMsg]);
+      send({ toUserId: selectedUser.userId, type: "chat", payload: jsonPayload });
+    };
+    reader.onerror = () => {
+      alert("Failed to read file.");
+    };
+    reader.readAsDataURL(file);
   }
 
   async function doCall(video: boolean) {
@@ -384,7 +448,14 @@ export function App() {
         alert(`Successfully imported ${deviceContacts.length} contacts!`);
       }
     } catch (err) {
-      alert("Failed to pick contacts: " + (err instanceof Error ? err.message : String(err)));
+      alert(
+        "Could not access device contacts.\n\n" +
+        "Common reasons:\n" +
+        "1. Permission was denied/blocked.\n" +
+        "2. Browser context restriction.\n\n" +
+        "Please use the 'Manage Manual Contacts' button to add contacts manually without any permissions!"
+      );
+      setShowSyncModal(true);
     }
   };
 
@@ -721,13 +792,22 @@ export function App() {
                     <div key={m.id} className={`msg-row ${isMe?"outgoing":"incoming"}`}>
                       <div className="msg-bubble">
                         {m.kind==="file-meta"?(
-                          <div className="msg-file">
-                            <div className="msg-file-icon"><I.File/></div>
-                            <div className="msg-file-info">
-                              <span className="msg-file-name">{m.content}</span>
-                              {m.downloadUrl&&<a href={m.downloadUrl} download target="_blank" rel="noreferrer">⬇ Download</a>}
-                            </div>
-                          </div>
+                          (() => {
+                            const isImage = m.downloadUrl && m.downloadUrl.startsWith("data:image/");
+                            return (
+                              <div className="msg-file" style={{ flexDirection: isImage ? "column" : "row", alignItems: "flex-start", gap: 10 }}>
+                                {isImage ? (
+                                  <img src={m.downloadUrl} alt={m.content} style={{ maxWidth: "100%", maxHeight: "240px", borderRadius: "8px", display: "block", marginBottom: "4px" }} />
+                                ) : (
+                                  <div className="msg-file-icon"><I.File/></div>
+                                )}
+                                <div className="msg-file-info" style={{ minWidth: 0 }}>
+                                  <span className="msg-file-name" style={{ fontWeight: 500 }}>{m.content}</span>
+                                  {m.downloadUrl&&<a href={m.downloadUrl} download={m.content.split(" (")[0]} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: "4px", fontSize: "12px" }}>⬇ Download</a>}
+                                </div>
+                              </div>
+                            );
+                          })()
                         ):<span className="msg-text">{m.content}</span>}
                         <div className="msg-meta">
                           <span className="msg-time">{fmtTime(m.ts)}</span>
