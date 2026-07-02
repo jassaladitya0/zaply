@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
-import { checkUsernameAvailability, login, register, requestOtp, searchUsers, updateProfile, verifyOtp } from "./api";
+import { checkUsernameAvailability, login, register, requestOtp, searchUsers, updateProfile, verifyOtp, syncContacts } from "./api";
 import type { ChatMessage, OtpPurpose, PublicUser, Session, SignalPayload, SignalScope, Theme } from "./types";
 import "./styles.css";
 
@@ -60,14 +60,16 @@ const I = {
 };
 
 /* ─── Avatar Component ─── */
-function Avatar({ user, size = 49, showDot = false, online = false }: { user: Pick<PublicUser,"displayName"|"avatarUrl">, size?: number, showDot?: boolean, online?: boolean }) {
+function Avatar({ user, size = 49, showDot = false, online = false, resolvedName }: { user: Pick<PublicUser,"displayName"|"avatarUrl">, size?: number, showDot?: boolean, online?: boolean, resolvedName?: string }) {
+  const name = resolvedName || user.displayName;
   return (
-    <div className="chat-avatar" style={{ width: size, height: size, fontSize: size * 0.4, background: user.avatarUrl ? undefined : avColor(user.displayName) }}>
-      {user.avatarUrl ? <img src={user.avatarUrl} alt={user.displayName} /> : initials(user.displayName)}
+    <div className="chat-avatar" style={{ width: size, height: size, fontSize: size * 0.4, background: user.avatarUrl ? undefined : avColor(name) }}>
+      {user.avatarUrl ? <img src={user.avatarUrl} alt={name} /> : initials(name)}
       {showDot && online && <span className="online-dot" />}
     </div>
   );
 }
+
 
 /* ─── Main App ─── */
 export function App() {
@@ -90,6 +92,14 @@ export function App() {
   const [inCall, setInCall] = useState(false); const [incomingFrom, setIncomingFrom] = useState<string|null>(null);
   const [activeNav, setActiveNav] = useState<"chats"|"calls"|"settings">("chats");
 
+  /* Local Address Book & Sync */
+  const [addressBook, setAddressBook] = useState<Record<string, string>>({}); // phone -> contactName
+  const [phoneToUser, setPhoneToUser] = useState<Record<string, string>>({}); // phone -> userId
+  const [userToPhone, setUserToPhone] = useState<Record<string, string>>({}); // userId -> phone
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactPhone, setNewContactPhone] = useState("");
+
   /* Refs */
   const socketRef = useRef<Socket|null>(null);
   const localVidRef = useRef<HTMLVideoElement|null>(null);
@@ -111,6 +121,9 @@ export function App() {
   useEffect(() => {
     const s = localStorage.getItem("zaply-session"); if (s) setSession(JSON.parse(s));
     const c = localStorage.getItem("zaply-contacts"); if (c) setContacts(JSON.parse(c));
+    const ab = localStorage.getItem("zaply-address-book"); if (ab) setAddressBook(JSON.parse(ab));
+    const p2u = localStorage.getItem("zaply-phone-to-user"); if (p2u) setPhoneToUser(JSON.parse(p2u));
+    const u2p = localStorage.getItem("zaply-user-to-phone"); if (u2p) setUserToPhone(JSON.parse(u2p));
     const m = localStorage.getItem("zaply-messages"); if (m) {
       const parsed: ChatMessage[] = JSON.parse(m);
       const now = Date.now();
@@ -121,6 +134,9 @@ export function App() {
   /* ─── Save contacts & messages ─── */
   useEffect(() => { if (contacts.length) localStorage.setItem("zaply-contacts", JSON.stringify(contacts)); }, [contacts]);
   useEffect(() => { localStorage.setItem("zaply-messages", JSON.stringify(messages)); }, [messages]);
+  useEffect(() => { localStorage.setItem("zaply-address-book", JSON.stringify(addressBook)); }, [addressBook]);
+  useEffect(() => { localStorage.setItem("zaply-phone-to-user", JSON.stringify(phoneToUser)); }, [phoneToUser]);
+  useEffect(() => { localStorage.setItem("zaply-user-to-phone", JSON.stringify(userToPhone)); }, [userToPhone]);
 
   /* ─── OTP countdown ─── */
   useEffect(() => { if (otpRetry <= 0) return; const t = setTimeout(() => setOtpRetry(x=>Math.max(0,x-1)),1000); return ()=>clearTimeout(t); }, [otpRetry]);
@@ -288,6 +304,89 @@ export function App() {
     send({toUserId:selectedUser.userId,type:"chat",payload:text.trim()});
     setText("");
   }
+
+  /* ─── Address Book Handlers ─── */
+  const syncWithServer = useCallback(async (currentAddressBook: Record<string, string>) => {
+    if (!session) return;
+    const phones = Object.keys(currentAddressBook);
+    if (phones.length === 0) return;
+    try {
+      const matched = await syncContacts(phones, session.token);
+      setPhoneToUser(prev => {
+        const next = { ...prev };
+        matched.forEach(u => { next[u.phone] = u.userId; });
+        return next;
+      });
+      setUserToPhone(prev => {
+        const next = { ...prev };
+        matched.forEach(u => { next[u.userId] = u.phone; });
+        return next;
+      });
+      setContacts(prev => {
+        let updated = [...prev];
+        matched.forEach(u => {
+          if (!updated.find(c => c.userId === u.userId)) {
+            updated = [u, ...updated];
+          }
+        });
+        return updated;
+      });
+    } catch (err) {
+      console.error("Sync error:", err);
+    }
+  }, [session]);
+
+  const addContact = (name: string, phoneStr: string) => {
+    const formatted = phoneStr.trim();
+    if (!formatted || !name.trim()) return;
+    setAddressBook(prev => {
+      const next = { ...prev, [formatted]: name.trim() };
+      void syncWithServer(next);
+      return next;
+    });
+    setNewContactName("");
+    setNewContactPhone("");
+  };
+
+  const getResolvedName = useCallback((user: Pick<PublicUser, "userId" | "displayName">) => {
+    const p = userToPhone[user.userId];
+    if (p && addressBook[p]) return addressBook[p];
+    return user.displayName;
+  }, [userToPhone, addressBook]);
+
+  const getResolvedPhone = useCallback((userId: string) => {
+    const p = userToPhone[userId];
+    if (p && addressBook[p]) return p;
+    return null;
+  }, [userToPhone, addressBook]);
+
+  const syncFromDevice = async () => {
+    try {
+      if (!('contacts' in navigator && 'ContactsManager' in window)) {
+        alert("Your browser does not support native contact picking. Please add contacts manually below.");
+        return;
+      }
+      // @ts-ignore
+      const deviceContacts = await navigator.contacts.select(['name', 'tel'], { multiple: true });
+      if (deviceContacts && deviceContacts.length > 0) {
+        const addedBook: Record<string, string> = { ...addressBook };
+        deviceContacts.forEach((c: any) => {
+          const name = c.name?.[0] || "Unknown Contact";
+          const rawPhone = c.tel?.[0] || "";
+          // Strip non-numeric characters except +
+          const cleanPhone = rawPhone.replace(/[^\d+]/g, "");
+          if (cleanPhone) {
+            addedBook[cleanPhone] = name;
+          }
+        });
+        setAddressBook(addedBook);
+        void syncWithServer(addedBook);
+        alert(`Successfully imported ${deviceContacts.length} contacts!`);
+      }
+    } catch (err) {
+      alert("Failed to pick contacts: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
 
   async function doSearch(q: string) {
     setQuery(q); if(!session||!q.trim()) return;
@@ -490,6 +589,19 @@ export function App() {
                 </div>
               </div>
 
+              {/* Sync Contacts Section */}
+              <div className="settings-section">
+                <div className="settings-section-title">CONTACTS</div>
+                <div style={{ padding: "0 24px 12px" }}>
+                  <button className="btn-primary" style={{ width: "100%", margin: "8px 0" }} onClick={syncFromDevice}>
+                    Sync from Device Contacts
+                  </button>
+                  <button className="btn-ghost" style={{ width: "100%" }} onClick={() => setShowSyncModal(true)}>
+                    Manage Manual Contacts ({Object.keys(addressBook).length})
+                  </button>
+                </div>
+              </div>
+
               {/* Logout */}
               <div className="settings-section">
                 <button className="logout-btn" onClick={()=>{localStorage.removeItem("zaply-session");setSession(null);setShowSettings(false);}}>
@@ -540,16 +652,18 @@ export function App() {
             </div>
           ):filteredContacts.map(u=>{
             const lm=lastMsg(u.userId), u_unread=unread[u.userId]??0, isOnline=online.has(u.userId);
+            const resolvedName = getResolvedName(u);
+            const resolvedPhone = getResolvedPhone(u.userId);
             return (
               <div key={u.userId} className={`chat-item ${selectedUser?.userId===u.userId?"active":""}`} onClick={()=>selectUser(u)}>
-                <Avatar user={u} size={49} showDot online={isOnline}/>
+                <Avatar user={u} size={49} showDot online={isOnline} resolvedName={resolvedName}/>
                 <div className="chat-info">
                   <div className="chat-info-top">
-                    <span className="chat-name">{u.displayName}</span>
+                    <span className="chat-name">{resolvedName}</span>
                     {lm&&<span className="chat-time">{fmtTime(lm.ts)}</span>}
                   </div>
                   <div className="chat-preview">
-                    <span className="chat-last-msg">{lm?(lm.kind==="file-meta"?"📎 "+lm.content:lm.content):`@${u.username}`}</span>
+                    <span className="chat-last-msg">{lm?(lm.kind==="file-meta"?"📎 "+lm.content:lm.content): resolvedPhone ? resolvedPhone : `@${u.username}`}</span>
                     {u_unread>0&&<span className="unread-badge">{u_unread}</span>}
                   </div>
                 </div>
@@ -581,11 +695,11 @@ export function App() {
           {/* Chat Header */}
           <div className="chat-header">
             <button className="icon-btn back-btn" onClick={()=>setSelectedUser(null)}><I.Back/></button>
-            <Avatar user={selectedUser} size={40} showDot online={online.has(selectedUser.userId)}/>
+            <Avatar user={selectedUser} size={40} showDot online={online.has(selectedUser.userId)} resolvedName={getResolvedName(selectedUser)}/>
             <div className="chat-header-info">
-              <div className="chat-header-name">{selectedUser.displayName}</div>
+              <div className="chat-header-name">{getResolvedName(selectedUser)}</div>
               <div className={`chat-header-status ${online.has(selectedUser.userId)?"online":""}`}>
-                {online.has(selectedUser.userId)?"online":`@${selectedUser.username}`}
+                {online.has(selectedUser.userId) ? "online" : getResolvedPhone(selectedUser.userId) ? `${getResolvedPhone(selectedUser.userId)} • @${selectedUser.username}` : `@${selectedUser.username}`}
               </div>
             </div>
             <div className="chat-header-actions">
@@ -597,7 +711,7 @@ export function App() {
 
           {/* Feed */}
           <div className="chat-feed" ref={feedRef}>
-            {grouped.length===0&&<div className="empty-chat"><p>👋 Say hello to {selectedUser.displayName}!</p></div>}
+            {grouped.length===0&&<div className="empty-chat"><p>👋 Say hello to {getResolvedName(selectedUser)}!</p></div>}
             {grouped.map(g=>(
               <div key={g.date}>
                 <div className="date-anchor"><span>{g.date}</span></div>
@@ -647,6 +761,71 @@ export function App() {
           </div>
         </>}
       </div>
+
+      {/* ─── Sync / Manual Contacts Modal ─── */}
+      {showSyncModal && (
+        <div className="settings-overlay" onClick={e => { if (e.target === e.currentTarget) setShowSyncModal(false); }}>
+          <div className="settings-panel" style={{ background: "var(--header-bg)" }}>
+            <div className="settings-header">
+              <button className="icon-btn" onClick={() => setShowSyncModal(false)}><I.Back /></button>
+              <h2>Address Book</h2>
+            </div>
+            <div className="settings-body" style={{ padding: "16px 20px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+                <h3 style={{ fontSize: 13, color: "var(--green)" }}>ADD NEW CONTACT</h3>
+                <input
+                  className="settings-edit-input"
+                  style={{ borderRadius: 6 }}
+                  placeholder="Contact Name (e.g. Dad)"
+                  value={newContactName}
+                  onChange={e => setNewContactName(e.target.value)}
+                />
+                <input
+                  className="settings-edit-input"
+                  style={{ borderRadius: 6 }}
+                  placeholder="Phone Number (e.g. 9805035450)"
+                  value={newContactPhone}
+                  onChange={e => setNewContactPhone(e.target.value)}
+                />
+                <button className="btn-primary" onClick={() => addContact(newContactName, newContactPhone)}>
+                  Add & Sync
+                </button>
+              </div>
+
+              <h3 style={{ fontSize: 13, color: "var(--green)", marginBottom: 10 }}>SAVED CONTACTS ({Object.keys(addressBook).length})</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "calc(100vh - 320px)", overflowY: "auto" }}>
+                {Object.keys(addressBook).length === 0 ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: 13 }}>No contacts saved yet.</p>
+                ) : (
+                  Object.entries(addressBook).map(([ph, name]) => {
+                    const matchedUserId = phoneToUser[ph];
+                    return (
+                      <div key={ph} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--panel-bg)", padding: "10px 12px", borderRadius: 8 }}>
+                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                          <span style={{ fontWeight: 500, fontSize: 15 }}>{name}</span>
+                          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{ph}</span>
+                          {matchedUserId ? (
+                            <span style={{ fontSize: 11, color: "var(--teal)", fontWeight: 500 }}>✓ Registered on Zaply</span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Not registered</span>
+                          )}
+                        </div>
+                        <button className="icon-btn" style={{ color: "#FF6B6B" }} onClick={() => {
+                          setAddressBook(prev => {
+                            const next = { ...prev };
+                            delete next[ph];
+                            return next;
+                          });
+                        }}>✕</button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

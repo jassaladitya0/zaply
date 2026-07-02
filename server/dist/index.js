@@ -6,7 +6,7 @@ import { Server } from "socket.io";
 import { parseAuthHeader, readUserFromRequest, signOtpProof, signToken, unauthorized, verifyOtpProof, verifyToken } from "./auth.js";
 import { connectDatabase } from "./db.js";
 import { requestOtp, verifyOtp } from "./otp.js";
-import { authenticate, createAccount, getPublicByUsername, searchUsers, updateProfile, usernameAvailable } from "./store.js";
+import { authenticate, createAccount, getPublicByUsername, getPublicByPhones, searchUsers, updateProfile, usernameAvailable } from "./store.js";
 const app = express();
 const server = http.createServer(app);
 const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_SEC ?? 45) * 1000;
@@ -253,6 +253,22 @@ app.get("/users/by-username/:username", async (req, res) => {
         return res.status(404).json({ error: "User not found" });
     }
     return res.json({ user });
+});
+app.post("/users/sync", async (req, res) => {
+    try {
+        const auth = readUserFromRequest(req);
+        const phones = Array.isArray(req.body?.phones) ? req.body.phones.map(String) : [];
+        if (phones.length === 0) {
+            return res.json({ users: [] });
+        }
+        const matchedUsers = await getPublicByPhones(phones);
+        // Exclude self if they somehow query their own phone
+        const filtered = matchedUsers.filter(u => u.userId !== auth.userId);
+        return res.json({ users: filtered });
+    }
+    catch {
+        return unauthorized(res);
+    }
 });
 app.patch("/me/profile", async (req, res) => {
     try {

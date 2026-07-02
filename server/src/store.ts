@@ -105,3 +105,15 @@ export function toPublicUser(account: Account): PublicUser {
     avatarUrl: account.avatarUrl
   };
 }
+
+export async function getPublicByPhones(phones: string[]): Promise<(PublicUser & { phone: string })[]> {
+  const accounts = (await AccountModel.find({ phone: { $in: phones } }).lean()) as unknown as Account[];
+  return accounts.map(acc => ({
+    userId: acc.userId,
+    username: acc.username,
+    displayName: acc.displayName,
+    avatarUrl: acc.avatarUrl,
+    phone: acc.phone
+  }));
+}
+

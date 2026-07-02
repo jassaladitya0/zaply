@@ -83,3 +83,16 @@ export async function updateProfile(
   );
   return result.user;
 }
+
+export async function syncContacts(phones: string[], token: string): Promise<(PublicUser & { phone: string })[]> {
+  const result = await request<{ users: (PublicUser & { phone: string })[] }>(
+    "/users/sync",
+    {
+      method: "POST",
+      body: JSON.stringify({ phones })
+    },
+    token
+  );
+  return result.users;
+}
+

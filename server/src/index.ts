@@ -10,6 +10,7 @@ import {
   authenticate,
   createAccount,
   getPublicByUsername,
+  getPublicByPhones,
   searchUsers,
   updateProfile,
   usernameAvailable
@@ -304,6 +305,23 @@ app.get("/users/by-username/:username", async (req, res) => {
   }
   return res.json({ user });
 });
+
+app.post("/users/sync", async (req, res) => {
+  try {
+    const auth = readUserFromRequest(req);
+    const phones = Array.isArray(req.body?.phones) ? req.body.phones.map(String) : [];
+    if (phones.length === 0) {
+      return res.json({ users: [] });
+    }
+    const matchedUsers = await getPublicByPhones(phones);
+    // Exclude self if they somehow query their own phone
+    const filtered = matchedUsers.filter(u => u.userId !== auth.userId);
+    return res.json({ users: filtered });
+  } catch {
+    return unauthorized(res);
+  }
+});
+
 
 app.patch("/me/profile", async (req, res) => {
   try {
