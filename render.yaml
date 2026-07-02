@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: zaply-backend
+    env: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install; npm --workspace server run build
+    startCommand: npm --workspace server run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 4000
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_VERIFY_SERVICE_SID
+        sync: false
+      - key: OTP_PROVIDER_MODE
+        value: twilio
+      - key: OTP_TEST_CODE
+        value: 000000
+      - key: OTP_RESEND_COOLDOWN_SEC
+        value: 45
+      - key: OTP_REQUEST_MAX_PER_HOUR
+        value: 5
+      - key: OTP_VERIFY_MAX_FAILURES
+        value: 5
+      - key: OTP_VERIFY_LOCKOUT_MINUTES
+        value: 15
+      - key: LOGIN_MAX_FAILURES
+        value: 8
+      - key: LOGIN_LOCKOUT_MINUTES
+        value: 15

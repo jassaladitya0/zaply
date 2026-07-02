@@ -1,0 +1,30 @@
+{
+  "name": "whatsapp-clone",
+  "version": "1.0.0",
+  "description": "Privacy-focused WhatsApp-style clone monorepo",
+  "scripts": {
+    "dev": "npm-run-all --parallel dev:server dev:client",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm-run-all build:server build:client",
+    "build:server": "npm --workspace server run build",
+    "build:client": "npm --workspace client run build",
+    "start": "npm --workspace server run start"
+  },
+  "keywords": [
+    "chat",
+    "webrtc",
+    "socketio",
+    "whatsapp-clone"
+  ],
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}
