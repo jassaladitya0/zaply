@@ -4,8 +4,8 @@ services:
     env: node
     plan: free
     rootDir: .
-    buildCommand: npm install --omit=dev
-    startCommand: node server/dist/index.js
+    buildCommand: npm install; npm --workspace server run build
+    startCommand: npm --workspace server run start
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -18,12 +18,6 @@ services:
       - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
-        sync: false
-      - key: TWILIO_ACCOUNT_SID
-        sync: false
-      - key: TWILIO_AUTH_TOKEN
-        sync: false
-      - key: TWILIO_VERIFY_SERVICE_SID
         sync: false
       - key: OTP_PROVIDER_MODE
         value: test
