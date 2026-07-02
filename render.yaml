@@ -4,7 +4,7 @@ services:
     env: node
     plan: free
     rootDir: .
-    buildCommand: npm install; npm --workspace server run build
+    buildCommand: npm install --include=dev; npm --workspace server run build
     startCommand: npm --workspace server run start
     healthCheckPath: /health
     autoDeploy: true
