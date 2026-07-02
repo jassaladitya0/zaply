@@ -4,8 +4,8 @@ services:
     env: node
     plan: free
     rootDir: .
-    buildCommand: npm install --include=dev; npm --workspace server run build
-    startCommand: npm --workspace server run start
+    buildCommand: npm install --omit=dev
+    startCommand: node server/dist/index.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -26,9 +26,9 @@ services:
       - key: TWILIO_VERIFY_SERVICE_SID
         sync: false
       - key: OTP_PROVIDER_MODE
-        value: twilio
+        value: test
       - key: OTP_TEST_CODE
-        value: 000000
+        value: "000000"
       - key: OTP_RESEND_COOLDOWN_SEC
         value: 45
       - key: OTP_REQUEST_MAX_PER_HOUR
