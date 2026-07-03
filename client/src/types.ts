@@ -27,6 +27,6 @@ export type ChatMessage = {
 
 export type SignalPayload = {
   toUserId: string;
-  type: "chat" | "offer" | "answer" | "ice" | "file-meta" | "typing";
+  type: "chat" | "offer" | "answer" | "ice" | "file-meta" | "typing" | "close-call";
   payload: unknown;
 };

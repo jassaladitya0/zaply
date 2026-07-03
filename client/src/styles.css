@@ -192,7 +192,7 @@ html, body {
 .call-overlay video.remote { width: 300px; height: 400px; }
 
 /* Bottom Nav */
-.bottom-nav { display: none; background: var(--header-bg); border-top: 1px solid var(--border); padding: 6px 0 2px; }
+.bottom-nav { display: block; background: var(--header-bg); border-top: 1px solid var(--border); padding: 6px 0 2px; }
 .bottom-nav-items { display: flex; justify-content: space-around; }
 .nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 20px; cursor: pointer; color: var(--text-muted); font-size: 11px; font-weight: 500; transition: color 0.15s; border: none; background: transparent; font-family: inherit; }
 .nav-item.active { color: var(--green); }

@@ -96,3 +96,15 @@ export async function syncContacts(phones: string[], token: string): Promise<(Pu
   return result.users;
 }
 
+export async function fetchBulkProfiles(userIds: string[], token: string): Promise<PublicUser[]> {
+  const result = await request<{ users: PublicUser[] }>(
+    "/users/bulk",
+    {
+      method: "POST",
+      body: JSON.stringify({ userIds })
+    },
+    token
+  );
+  return result.users;
+}
+

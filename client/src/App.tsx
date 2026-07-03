@@ -1,11 +1,31 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { io, type Socket } from "socket.io-client";
-import { checkUsernameAvailability, login, register, requestOtp, searchUsers, updateProfile, verifyOtp, syncContacts } from "./api";
+import { checkUsernameAvailability, login, register, requestOtp, searchUsers, updateProfile, verifyOtp, syncContacts, fetchBulkProfiles } from "./api";
 import type { ChatMessage, OtpPurpose, PublicUser, Session, SignalPayload, SignalScope, Theme } from "./types";
 import "./styles.css";
 
 /* ─── Types ─── */
-type SignalReceive = { fromUserId: string; fromUsername: string; envelope: { toUserId: string; type: "chat"|"offer"|"answer"|"ice"|"file-meta"|"typing"; payload: unknown; expiresAt?: number } };
+export interface CallLog {
+  id: string;
+  userId: string;
+  userName: string;
+  type: "voice" | "video";
+  direction: "incoming" | "outgoing" | "missed";
+  ts: number;
+}
+
+type SignalReceive = {
+  fromUserId: string;
+  fromUsername: string;
+  fromDisplayName?: string;
+  fromAvatarUrl?: string;
+  envelope: {
+    toUserId: string;
+    type: "chat" | "offer" | "answer" | "ice" | "file-meta" | "typing" | "close-call";
+    payload: unknown;
+    expiresAt?: number;
+  };
+};
 type ScopedOffer = { scope: SignalScope; sdp: RTCSessionDescriptionInit };
 type ScopedAnswer = { scope: SignalScope; sdp: RTCSessionDescriptionInit };
 type ScopedIce = { scope: SignalScope; candidate: RTCIceCandidateInit };
@@ -104,6 +124,19 @@ export function App() {
   const [editName, setEditName] = useState(""); const [editingName, setEditingName] = useState(false);
   const [inCall, setInCall] = useState(false); const [incomingFrom, setIncomingFrom] = useState<string|null>(null);
   const [activeNav, setActiveNav] = useState<"chats"|"calls"|"settings">("chats");
+  const [callHistory, setCallHistory] = useState<CallLog[]>([]);
+
+  const addCallLog = useCallback((uid: string, name: string, type: "voice" | "video", direction: "incoming" | "outgoing" | "missed") => {
+    const newLog: CallLog = {
+      id: crypto.randomUUID(),
+      userId: uid,
+      userName: name,
+      type,
+      direction,
+      ts: Date.now()
+    };
+    setCallHistory(prev => [newLog, ...prev]);
+  }, []);
 
   /* Local Address Book & Sync */
   const [addressBook, setAddressBook] = useState<Record<string, string>>({}); // phone -> contactName
@@ -137,6 +170,7 @@ export function App() {
     const ab = localStorage.getItem("zaply-address-book"); if (ab) setAddressBook(JSON.parse(ab));
     const p2u = localStorage.getItem("zaply-phone-to-user"); if (p2u) setPhoneToUser(JSON.parse(p2u));
     const u2p = localStorage.getItem("zaply-user-to-phone"); if (u2p) setUserToPhone(JSON.parse(u2p));
+    const ch = localStorage.getItem("zaply-call-history"); if (ch) setCallHistory(JSON.parse(ch));
     const m = localStorage.getItem("zaply-messages"); if (m) {
       const parsed: ChatMessage[] = JSON.parse(m);
       const now = Date.now();
@@ -150,10 +184,36 @@ export function App() {
   useEffect(() => { localStorage.setItem("zaply-address-book", JSON.stringify(addressBook)); }, [addressBook]);
   useEffect(() => { localStorage.setItem("zaply-phone-to-user", JSON.stringify(phoneToUser)); }, [phoneToUser]);
   useEffect(() => { localStorage.setItem("zaply-user-to-phone", JSON.stringify(userToPhone)); }, [userToPhone]);
+  useEffect(() => { localStorage.setItem("zaply-call-history", JSON.stringify(callHistory)); }, [callHistory]);
 
   /* ─── OTP countdown ─── */
   useEffect(() => { if (otpRetry <= 0) return; const t = setTimeout(() => setOtpRetry(x=>Math.max(0,x-1)),1000); return ()=>clearTimeout(t); }, [otpRetry]);
   useEffect(() => { setOtpCode(""); setOtpProof(""); setOtpStatus(null); setOtpRetry(0); }, [authMode, phone]);
+
+  /* ─── Notification Permission & Profile Sync ─── */
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session && contacts.length > 0) {
+      const ids = contacts.map(c => c.userId);
+      fetchBulkProfiles(ids, session.token)
+        .then(fresh => {
+          setContacts(prev => {
+            const next = prev.map(u => {
+              const match = fresh.find(f => f.userId === u.userId);
+              return match ? { ...u, displayName: match.displayName, avatarUrl: match.avatarUrl } : u;
+            });
+            localStorage.setItem("zaply-contacts", JSON.stringify(next));
+            return next;
+          });
+        })
+        .catch(err => console.error("Error bulk syncing contact profiles:", err));
+    }
+  }, [session]);
 
   /* ─── Socket ─── */
   useEffect(() => {
@@ -167,8 +227,32 @@ export function App() {
       setOnline(prev => { const s=new Set(prev); on?s.add(userId):s.delete(userId); return s; });
     });
 
+    sock.on("profile:update", ({ userId, displayName, avatarUrl }: { userId: string; displayName: string; avatarUrl: string }) => {
+      setContacts(prev => {
+        const next = prev.map(u => u.userId === userId ? { ...u, displayName, avatarUrl } : u);
+        localStorage.setItem("zaply-contacts", JSON.stringify(next));
+        return next;
+      });
+    });
+
     sock.on("signal:receive", async (pkt: SignalReceive) => {
-      const { fromUserId, fromUsername, envelope } = pkt;
+      const { fromUserId, fromUsername, fromDisplayName, fromAvatarUrl, envelope } = pkt;
+
+      // Update local contacts cache with sender details
+      setContacts(prev => {
+        const existing = prev.find(u => u.userId === fromUserId);
+        const resolvedDisp = fromDisplayName || fromUsername;
+        if (existing) {
+          if (existing.displayName === resolvedDisp && existing.avatarUrl === fromAvatarUrl) return prev;
+          const next = prev.map(u => u.userId === fromUserId ? { ...u, displayName: resolvedDisp, avatarUrl: fromAvatarUrl } : u);
+          localStorage.setItem("zaply-contacts", JSON.stringify(next));
+          return next;
+        }
+        const newUser = { userId: fromUserId, username: fromUsername, displayName: resolvedDisp, avatarUrl: fromAvatarUrl };
+        const next = [newUser, ...prev];
+        localStorage.setItem("zaply-contacts", JSON.stringify(next));
+        return next;
+      });
 
       if (envelope.type === "chat") {
         const payloadStr = String(envelope.payload);
@@ -198,14 +282,16 @@ export function App() {
           expiresAt: envelope.expiresAt ?? Date.now() + TTL
         };
         setMessages(prev=>[...prev,msg]);
-        setContacts(prev => {
-          if (prev.find(u=>u.userId===fromUserId)) return prev;
-          const newUser = { userId: fromUserId, username: fromUsername, displayName: fromUsername };
-          const next = [newUser, ...prev];
-          localStorage.setItem("zaply-contacts", JSON.stringify(next));
-          return next;
-        });
         if (selectedRef.current?.userId !== fromUserId) setUnread(p=>({...p,[fromUserId]:(p[fromUserId]??0)+1}));
+
+        // Trigger Web Notification if user is off-tab
+        if (document.visibilityState !== "visible" && "Notification" in window && Notification.permission === "granted") {
+          const senderName = fromDisplayName || fromUsername;
+          new Notification(senderName, {
+            body: isFile ? `📎 Sent a file: ${msgContent}` : msgContent,
+            tag: fromUserId
+          });
+        }
       }
 
       if (envelope.type === "file-meta") {
@@ -213,12 +299,21 @@ export function App() {
         setMessages(prev=>[...prev,{ id:crypto.randomUUID(), fromUserId, toUserId:session.user.userId, kind:"file-meta", content:`${meta.name} (${Math.round(meta.size/1024)} KB)`, ts:Date.now(), expiresAt:Date.now()+TTL }]);
       }
 
+      if (envelope.type === "close-call") {
+        endCall(true);
+      }
+
       if (envelope.type === "offer") {
-        const p = envelope.payload as ScopedOffer;
+        const p = envelope.payload as ScopedOffer & { video?: boolean };
         if (p.scope === "call") {
           setIncomingFrom(fromUserId);
+          const isVideo = p.video ?? true;
+          // Log incoming call history
+          const callerName = fromDisplayName || fromUsername;
+          addCallLog(fromUserId, callerName, isVideo ? "video" : "voice", "incoming");
+
           try {
-            const stream = await getMedia(true);
+            const stream = await getMedia(isVideo);
             const pc = makePc(); callPcRef.current=pc;
             stream.getTracks().forEach(t=>pc.addTrack(t,stream));
             pc.ontrack=e=>{if(remoteVidRef.current)remoteVidRef.current.srcObject=e.streams[0]};
@@ -252,7 +347,7 @@ export function App() {
     });
 
     return ()=>{sock.disconnect();};
-  }, [session]);
+  }, [session, addCallLog]);
 
   /* ─── TTL cleanup ─── */
   useEffect(() => { const t=setInterval(()=>{ const now=Date.now(); setMessages(p=>p.filter(m=>m.expiresAt>now)); },60_000); return()=>clearInterval(t); }, []);
@@ -341,21 +436,40 @@ export function App() {
     reader.readAsDataURL(file);
   }
 
-  async function doCall(video: boolean) {
-    if(!session||!selectedUser){alert("Select a user first");return;}
+  async function doCall(video: boolean, targetUser = selectedUser) {
+    if(!session||!targetUser){alert("Select a user first");return;}
     try {
+      addCallLog(targetUser.userId, getResolvedName(targetUser), video ? "video" : "voice", "outgoing");
       const stream=await getMedia(video);
       const pc=makePc(); callPcRef.current=pc;
       stream.getTracks().forEach(t=>pc.addTrack(t,stream));
       pc.ontrack=e=>{if(remoteVidRef.current)remoteVidRef.current.srcObject=e.streams[0]};
-      pc.onicecandidate=e=>{if(e.candidate)send({toUserId:selectedUser.userId,type:"ice",payload:{scope:"call",candidate:e.candidate}})};
+      pc.onicecandidate=e=>{if(e.candidate)send({toUserId:targetUser.userId,type:"ice",payload:{scope:"call",candidate:e.candidate}})};
       const off=await pc.createOffer(); await pc.setLocalDescription(off);
-      send({toUserId:selectedUser.userId,type:"offer",payload:{scope:"call",sdp:off}});
+      send({toUserId:targetUser.userId,type:"offer",payload:{scope:"call",sdp:off,video}});
       setInCall(true);
     } catch(e){ alert(e instanceof Error ? e.message : "Call failed"); }
   }
 
-  function endCall() {
+  function endCall(isRemote = false) {
+    if (!isRemote) {
+      const peerId = incomingFrom || selectedRef.current?.userId;
+      if (peerId) {
+        send({ toUserId: peerId, type: "close-call", payload: {} });
+      }
+    }
+    if (incomingFrom) {
+      // Mark last incoming call from this user as missed if it was never answered
+      setCallHistory(prev => {
+        const idx = prev.findIndex(l => l.userId === incomingFrom && l.direction === "incoming");
+        if (idx !== -1) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], direction: "missed" };
+          return next;
+        }
+        return prev;
+      });
+    }
     callPcRef.current?.close(); callPcRef.current=null;
     localStreamRef.current?.getTracks().forEach(t=>t.stop()); localStreamRef.current=null;
     setInCall(false); setIncomingFrom(null);
@@ -584,7 +698,7 @@ export function App() {
           </div>
           <div style={{display:"flex",gap:12}}>
             {incomingFrom&&<button className="btn-primary" onClick={()=>void doCall(true)}>Accept</button>}
-            <button className="btn-ghost" style={{color:"#FF6B6B",borderColor:"#FF6B6B"}} onClick={endCall}>End Call</button>
+            <button className="btn-ghost" style={{color:"#FF6B6B",borderColor:"#FF6B6B"}} onClick={() => endCall()}>End Call</button>
           </div>
         </div>
       )}
@@ -691,57 +805,152 @@ export function App() {
           <div onClick={()=>setShowSettings(true)} style={{cursor:"pointer"}}>
             <Avatar user={session.user} size={40}/>
           </div>
-          <span className="left-header-title">Zaply</span>
+          <span className="left-header-title">
+            {activeNav === "calls" ? "Calls" : "Zaply"}
+          </span>
           <div className="header-actions">
+            {activeNav === "calls" && callHistory.length > 0 && (
+              <button
+                className="icon-btn"
+                title="Clear Logs"
+                style={{ color: "#FF6B6B", fontWeight: "bold" }}
+                onClick={() => { if(confirm("Clear call history?")) setCallHistory([]); }}
+              >
+                ✕
+              </button>
+            )}
             <button className="icon-btn" title="Settings" onClick={()=>setShowSettings(true)}><I.Settings/></button>
             <button className="icon-btn"><I.Dots/></button>
           </div>
         </div>
 
-        {/* Search */}
-        <div className="search-bar">
-          <div className="search-input-wrap">
-            <I.Search/>
-            <input value={query} onChange={e=>void doSearch(e.target.value)} placeholder="Search users to chat"/>
-          </div>
-        </div>
-
-        {/* Pills */}
-        <div className="filter-pills">
-          <button className={`pill ${filterPill==="all"?"active":""}`} onClick={()=>setFilterPill("all")}>All</button>
-          <button className={`pill ${filterPill==="unread"?"active":""}`} onClick={()=>setFilterPill("unread")}>
-            Unread{Object.values(unread).reduce((a,b)=>a+b,0)>0?` (${Object.values(unread).reduce((a,b)=>a+b,0)})`:``}
-          </button>
-        </div>
-
-        {/* Chat List */}
-        <div className="chat-list">
-          {filteredContacts.length===0?(
-            <div className="empty-chat-list">
-              <I.WA/>
-              <p>Search for users above to start chatting</p>
-            </div>
-          ):filteredContacts.map(u=>{
-            const lm=lastMsg(u.userId), u_unread=unread[u.userId]??0, isOnline=online.has(u.userId);
-            const resolvedName = getResolvedName(u);
-            const resolvedPhone = getResolvedPhone(u.userId);
-            return (
-              <div key={u.userId} className={`chat-item ${selectedUser?.userId===u.userId?"active":""}`} onClick={()=>selectUser(u)}>
-                <Avatar user={u} size={49} showDot online={isOnline} resolvedName={resolvedName}/>
-                <div className="chat-info">
-                  <div className="chat-info-top">
-                    <span className="chat-name">{resolvedName}</span>
-                    {lm&&<span className="chat-time">{fmtTime(lm.ts)}</span>}
-                  </div>
-                  <div className="chat-preview">
-                    <span className="chat-last-msg">{lm?(lm.kind==="file-meta"?"📎 "+lm.content:lm.content): resolvedPhone ? resolvedPhone : `@${u.username}`}</span>
-                    {u_unread>0&&<span className="unread-badge">{u_unread}</span>}
-                  </div>
-                </div>
+        {activeNav === "chats" ? (
+          <>
+            {/* Search */}
+            <div className="search-bar">
+              <div className="search-input-wrap">
+                <I.Search/>
+                <input value={query} onChange={e=>void doSearch(e.target.value)} placeholder="Search users to chat"/>
               </div>
-            );
-          })}
-        </div>
+            </div>
+
+            {/* Pills */}
+            <div className="filter-pills">
+              <button className={`pill ${filterPill==="all"?"active":""}`} onClick={()=>setFilterPill("all")}>All</button>
+              <button className={`pill ${filterPill==="unread"?"active":""}`} onClick={()=>setFilterPill("unread")}>
+                Unread{Object.values(unread).reduce((a,b)=>a+b,0)>0?` (${Object.values(unread).reduce((a,b)=>a+b,0)})`:``}
+              </button>
+            </div>
+
+            {/* Chat List */}
+            <div className="chat-list">
+              {filteredContacts.length===0?(
+                <div className="empty-chat-list">
+                  <I.WA/>
+                  <p>Search for users above to start chatting</p>
+                </div>
+              ):filteredContacts.map(u=>{
+                const lm=lastMsg(u.userId), u_unread=unread[u.userId]??0, isOnline=online.has(u.userId);
+                const resolvedName = getResolvedName(u);
+                const resolvedPhone = getResolvedPhone(u.userId);
+                return (
+                  <div key={u.userId} className={`chat-item ${selectedUser?.userId===u.userId?"active":""}`} onClick={()=>selectUser(u)}>
+                    <Avatar user={u} size={49} showDot online={isOnline} resolvedName={resolvedName}/>
+                    <div className="chat-info">
+                      <div className="chat-info-top">
+                        <span className="chat-name">{resolvedName}</span>
+                        {lm&&<span className="chat-time">{fmtTime(lm.ts)}</span>}
+                      </div>
+                      <div className="chat-preview">
+                        <span className="chat-last-msg">{lm?(lm.kind==="file-meta"?"📎 "+lm.content:lm.content): resolvedPhone ? resolvedPhone : `@${u.username}`}</span>
+                        {u_unread>0&&<span className="unread-badge">{u_unread}</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          /* Calls History List */
+          <div className="chat-list call-history-list">
+            {callHistory.length === 0 ? (
+              <div className="empty-chat-list">
+                <div className="msg-file-icon" style={{ marginBottom: 10, background: "rgba(0, 168, 132, 0.1)" }}><I.Calls/></div>
+                <p>No recent calls</p>
+                <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>Select a contact and click calling button to start a call.</span>
+              </div>
+            ) : (
+              callHistory.map(log => {
+                const targetContact = contacts.find(c => c.userId === log.userId);
+                const isOnline = online.has(log.userId);
+                const resolvedName = targetContact ? getResolvedName(targetContact) : log.userName;
+                const avatarUser = targetContact || { displayName: log.userName, avatarUrl: "" };
+
+                return (
+                  <div key={log.id} className="chat-item call-history-item" style={{ cursor: "default" }}>
+                    <Avatar user={avatarUser} size={49} showDot online={isOnline} resolvedName={resolvedName}/>
+                    <div className="chat-info">
+                      <div className="chat-info-top">
+                        <span className="chat-name">{resolvedName}</span>
+                        <span className="chat-time">{fmtTime(log.ts)}</span>
+                      </div>
+                      <div className="chat-preview" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                        {log.direction === "outgoing" ? (
+                          <span style={{ color: "var(--green)", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 13 }}>
+                            ↗ Outgoing
+                          </span>
+                        ) : log.direction === "incoming" ? (
+                          <span style={{ color: "var(--teal)", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 13 }}>
+                            ↙ Incoming
+                          </span>
+                        ) : (
+                          <span style={{ color: "#FF6B6B", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 13, fontWeight: 500 }}>
+                            ↙ Missed
+                          </span>
+                        )}
+                        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>• {log.type === "video" ? "Video" : "Voice"}</span>
+                      </div>
+                    </div>
+                    {/* Call Actions */}
+                    <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                      <button
+                        className="icon-btn"
+                        title="Voice Call"
+                        onClick={() => {
+                          if (targetContact) {
+                            setSelectedUser(targetContact);
+                            doCall(false, targetContact);
+                          } else {
+                            const temp = { userId: log.userId, username: log.userName.toLowerCase(), displayName: log.userName };
+                            doCall(false, temp);
+                          }
+                        }}
+                      >
+                        <I.Phone/>
+                      </button>
+                      <button
+                        className="icon-btn"
+                        title="Video Call"
+                        onClick={() => {
+                          if (targetContact) {
+                            setSelectedUser(targetContact);
+                            doCall(true, targetContact);
+                          } else {
+                            const temp = { userId: log.userId, username: log.userName.toLowerCase(), displayName: log.userName };
+                            doCall(true, temp);
+                          }
+                        }}
+                      >
+                        <I.Video/>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
 
         {/* Bottom Nav (mobile) */}
         <div className="bottom-nav">

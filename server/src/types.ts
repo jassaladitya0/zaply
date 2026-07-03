@@ -23,7 +23,7 @@ export type AuthPayload = {
 
 export type SignalEnvelope = {
   toUserId: string;
-  type: "chat" | "offer" | "answer" | "ice" | "file-meta" | "typing";
+  type: "chat" | "offer" | "answer" | "ice" | "file-meta" | "typing" | "close-call";
   payload: unknown;
   expiresAt?: number;
 };

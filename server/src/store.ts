@@ -117,3 +117,8 @@ export async function getPublicByPhones(phones: string[]): Promise<(PublicUser &
   }));
 }
 
+export async function getPublicByIds(userIds: string[]): Promise<PublicUser[]> {
+  const accounts = (await AccountModel.find({ userId: { $in: userIds } }).lean()) as unknown as Account[];
+  return accounts.map(toPublicUser);
+}
+

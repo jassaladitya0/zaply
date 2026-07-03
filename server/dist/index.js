@@ -6,7 +6,7 @@ import { Server } from "socket.io";
 import { parseAuthHeader, readUserFromRequest, signOtpProof, signToken, unauthorized, verifyOtpProof, verifyToken } from "./auth.js";
 import { connectDatabase } from "./db.js";
 import { requestOtp, verifyOtp } from "./otp.js";
-import { authenticate, createAccount, getPublicByUsername, getPublicByPhones, searchUsers, updateProfile, usernameAvailable } from "./store.js";
+import { authenticate, createAccount, getPublicByUsername, getPublicByPhones, searchUsers, updateProfile, usernameAvailable, getAccountById, getPublicByIds } from "./store.js";
 const app = express();
 const server = http.createServer(app);
 const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_SEC ?? 45) * 1000;
@@ -270,6 +270,20 @@ app.post("/users/sync", async (req, res) => {
         return unauthorized(res);
     }
 });
+app.post("/users/bulk", async (req, res) => {
+    try {
+        const auth = readUserFromRequest(req); // verify authentication
+        const userIds = Array.isArray(req.body?.userIds) ? req.body.userIds.map(String) : [];
+        if (userIds.length === 0) {
+            return res.json({ users: [] });
+        }
+        const publicUsers = await getPublicByIds(userIds);
+        return res.json({ users: publicUsers });
+    }
+    catch {
+        return unauthorized(res);
+    }
+});
 app.patch("/me/profile", async (req, res) => {
     try {
         const auth = readUserFromRequest(req);
@@ -277,6 +291,20 @@ app.patch("/me/profile", async (req, res) => {
             displayName: req.body?.displayName,
             avatarUrl: req.body?.avatarUrl,
             theme: req.body?.theme
+        });
+        // Update active socket data & broadcast update to all connected clients
+        const sess = sessionsByUserId.get(auth.userId);
+        if (sess) {
+            const userSockets = await io.in(sess.socketId).fetchSockets();
+            for (const s of userSockets) {
+                s.data.displayName = user.displayName;
+                s.data.avatarUrl = user.avatarUrl;
+            }
+        }
+        io.emit("profile:update", {
+            userId: auth.userId,
+            displayName: user.displayName,
+            avatarUrl: user.avatarUrl
         });
         return res.json({ user });
     }
@@ -292,7 +320,7 @@ function cleanupExpiredEnvelope(envelope) {
         expiresAt: Date.now() + ttl
     };
 }
-io.use((socket, next) => {
+io.use(async (socket, next) => {
     try {
         const authHeader = socket.handshake.auth?.token || parseAuthHeader(socket.handshake.headers.authorization);
         if (!authHeader) {
@@ -301,6 +329,12 @@ io.use((socket, next) => {
         const payload = verifyToken(authHeader);
         socket.data.userId = payload.userId;
         socket.data.username = payload.username;
+        // Fetch and cache user profile information
+        const account = await getAccountById(payload.userId);
+        if (account) {
+            socket.data.displayName = account.displayName;
+            socket.data.avatarUrl = account.avatarUrl;
+        }
         return next();
     }
     catch {
@@ -322,6 +356,8 @@ io.on("connection", (socket) => {
         io.to(target.socketId).emit("signal:receive", {
             fromUserId: userId,
             fromUsername: username,
+            fromDisplayName: socket.data.displayName || username,
+            fromAvatarUrl: socket.data.avatarUrl || "",
             envelope
         });
         socket.emit("signal:delivery", { toUserId: envelope.toUserId, delivered: true });

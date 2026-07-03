@@ -90,3 +90,7 @@ export async function getPublicByPhones(phones) {
         phone: acc.phone
     }));
 }
+export async function getPublicByIds(userIds) {
+    const accounts = (await AccountModel.find({ userId: { $in: userIds } }).lean());
+    return accounts.map(toPublicUser);
+}
