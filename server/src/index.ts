@@ -348,13 +348,10 @@ app.patch("/me/profile", async (req, res) => {
     });
 
     // Update active socket data & broadcast update to all connected clients
-    const sess = sessionsByUserId.get(auth.userId);
-    if (sess) {
-      const userSockets = await io.in(sess.socketId).fetchSockets();
-      for (const s of userSockets) {
-        s.data.displayName = user.displayName;
-        s.data.avatarUrl = user.avatarUrl;
-      }
+    const userSockets = await io.in(auth.userId).fetchSockets();
+    for (const s of userSockets) {
+      s.data.displayName = user.displayName;
+      s.data.avatarUrl = user.avatarUrl;
     }
     io.emit("profile:update", {
       userId: auth.userId,
@@ -368,13 +365,7 @@ app.patch("/me/profile", async (req, res) => {
   }
 });
 
-type OnlineSession = {
-  socketId: string;
-  userId: string;
-  username: string;
-};
-
-const sessionsByUserId = new Map<string, OnlineSession>();
+const sessionsByUserId = new Map<string, Set<string>>();
 
 function cleanupExpiredEnvelope(envelope: SignalEnvelope): SignalEnvelope {
   const ttl = 24 * 60 * 60 * 1000;
@@ -411,17 +402,22 @@ io.on("connection", (socket) => {
   const userId: string = socket.data.userId;
   const username: string = socket.data.username;
 
-  sessionsByUserId.set(userId, { socketId: socket.id, userId, username });
+  if (!sessionsByUserId.has(userId)) {
+    sessionsByUserId.set(userId, new Set());
+  }
+  sessionsByUserId.get(userId)!.add(socket.id);
+  socket.join(userId);
+
   io.emit("presence:update", { userId, online: true });
 
   socket.on("signal:send", (raw: SignalEnvelope) => {
     const envelope = cleanupExpiredEnvelope(raw);
-    const target = sessionsByUserId.get(envelope.toUserId);
-    if (!target) {
+    const targetSocketIds = sessionsByUserId.get(envelope.toUserId);
+    if (!targetSocketIds || targetSocketIds.size === 0) {
       socket.emit("signal:delivery", { toUserId: envelope.toUserId, delivered: false });
       return;
     }
-    io.to(target.socketId).emit("signal:receive", {
+    io.to(envelope.toUserId).emit("signal:receive", {
       fromUserId: userId,
       fromUsername: username,
       fromDisplayName: socket.data.displayName || username,
@@ -432,8 +428,14 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    sessionsByUserId.delete(userId);
-    io.emit("presence:update", { userId, online: false });
+    const activeSockets = sessionsByUserId.get(userId);
+    if (activeSockets) {
+      activeSockets.delete(socket.id);
+      if (activeSockets.size === 0) {
+        sessionsByUserId.delete(userId);
+        io.emit("presence:update", { userId, online: false });
+      }
+    }
   });
 });
 

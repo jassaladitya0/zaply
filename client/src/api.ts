@@ -1,6 +1,20 @@
 import type { OtpPurpose, PublicUser, Session, Theme } from "./types";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:4000";
+const resolveApiBase = (): string => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (envUrl) {
+    return envUrl;
+  }
+  if (typeof window !== "undefined" && window.location) {
+    const host = window.location.hostname;
+    if (host && host !== "localhost" && host !== "127.0.0.1") {
+      return `${window.location.protocol}//${host}:4000`;
+    }
+  }
+  return "http://localhost:4000";
+};
+
+const API_BASE = resolveApiBase();
 
 async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
   const headers: Record<string, string> = {
