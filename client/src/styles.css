@@ -125,4 +125,85 @@
     width: 0%;
     transition: width 0.1s linear;
   }
+
+  /* Soundwave Visualizer Animation */
+  .soundwave-container {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 50px;
+  }
+  .soundwave-bar {
+    width: 4px;
+    height: 12px;
+    background: #4648d4;
+    border-radius: 2px;
+    animation: bounce-soundwave 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes bounce-soundwave {
+    0% { height: 12px; transform: scaleY(1); }
+    100% { height: 42px; transform: scaleY(1.5); }
+  }
+  .soundwave-bar:nth-child(2) { animation-delay: 0.15s; background-color: #6063ee; }
+  .soundwave-bar:nth-child(3) { animation-delay: 0.3s; background-color: #c0c1ff; }
+  .soundwave-bar:nth-child(4) { animation-delay: 0.45s; background-color: #4e45d5; }
+  .soundwave-bar:nth-child(5) { animation-delay: 0.2s; background-color: #6860ef; }
+  .soundwave-bar:nth-child(6) { animation-delay: 0.35s; background-color: #4648d4; }
+
+  /* Pulsing calling ring */
+  .calling-pulse-container {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .calling-avatar-wrapper {
+    position: relative;
+    z-index: 10;
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 4px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  }
+  .calling-pulse-ring {
+    position: absolute;
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    border: 2px solid rgba(70, 72, 212, 0.6);
+    animation: calling-ring-pulsing 2s infinite ease-out;
+  }
+  .calling-pulse-ring:nth-child(2) {
+    animation-delay: 0.6s;
+  }
+  .calling-pulse-ring:nth-child(3) {
+    animation-delay: 1.2s;
+  }
+  @keyframes calling-ring-pulsing {
+    0% { transform: scale(1); opacity: 0.8; }
+    50% { opacity: 0.4; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+
+  /* Status media items */
+  .status-media-wrapper {
+    position: relative;
+    width: 100%;
+    height: 70vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+  }
+  .status-media-content {
+    max-width: 90%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 16px;
+    box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+  }
 }

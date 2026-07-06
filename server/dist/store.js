@@ -19,6 +19,8 @@ export async function createAccount(input) {
         displayName: input.displayName,
         passwordHash: hashPassword(input.password),
         theme: "sand",
+        statusPrivacyMode: "all",
+        statusPrivacyUsers: [],
         createdAt: Date.now()
     };
     await AccountModel.create(account);
@@ -69,8 +71,20 @@ export async function updateProfile(userId, patch) {
     if (patch.theme) {
         account.theme = patch.theme;
     }
+    if (patch.statusPrivacyMode) {
+        account.statusPrivacyMode = patch.statusPrivacyMode;
+    }
+    if (Array.isArray(patch.statusPrivacyUsers)) {
+        account.statusPrivacyUsers = patch.statusPrivacyUsers;
+    }
     await account.save();
-    return toPublicUser(account.toObject());
+    const obj = account.toObject();
+    return {
+        ...toPublicUser(obj),
+        theme: obj.theme,
+        statusPrivacyMode: obj.statusPrivacyMode,
+        statusPrivacyUsers: obj.statusPrivacyUsers
+    };
 }
 export function toPublicUser(account) {
     return {

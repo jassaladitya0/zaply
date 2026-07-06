@@ -11,7 +11,7 @@ import {
   syncContacts,
   fetchBulkProfiles
 } from "./api";
-import type { ChatMessage, OtpPurpose, PublicUser, Session, SignalPayload, SignalScope, Theme } from "./types";
+import type { ChatMessage, OtpPurpose, PublicUser, Session, SignalPayload, SignalScope, Theme, StatusUpdate, BroadcastChannel, Community } from "./types";
 import "./styles.css";
 
 /* ─── Types ─── */
@@ -41,16 +41,6 @@ type ScopedAnswer = { scope: SignalScope; sdp: RTCSessionDescriptionInit };
 type ScopedIce = { scope: SignalScope; candidate: RTCIceCandidateInit };
 type FileCtrl = { kind: "meta"; name: string; size: number; mime: string } | { kind: "done" };
 
-interface StatusUpdate {
-  id: string;
-  userId: string;
-  username: string;
-  displayName: string;
-  avatarUrl?: string;
-  time: string;
-  updates: { type: "text"; content: string }[];
-  viewed: boolean;
-}
 
 /* ─── Config ─── */
 const ICE: RTCIceServer[] = [
@@ -154,6 +144,33 @@ export function App() {
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [filterPill, setFilterPill] = useState<"all" | "unread">("all");
+
+  // Chatted users for status filtering
+  const chattedUserIds = useMemo(() => {
+    if (!session) return [];
+    const ids = new Set<string>();
+    messages.forEach((m) => {
+      if (m.fromUserId !== session.user.userId) ids.add(m.fromUserId);
+      if (m.toUserId !== session.user.userId) ids.add(m.toUserId);
+    });
+    return Array.from(ids);
+  }, [messages, session?.user.userId]);
+
+  const chattedUserIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    chattedUserIdsRef.current = chattedUserIds;
+  }, [chattedUserIds]);
+
+  // Status Privacy States
+  const [statusPrivacyMode, setStatusPrivacyMode] = useState<"all" | "share-with" | "hide-from">("all");
+  const [statusPrivacyUsers, setStatusPrivacyUsers] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (session?.user) {
+      setStatusPrivacyMode(session.user.statusPrivacyMode || "all");
+      setStatusPrivacyUsers(session.user.statusPrivacyUsers || []);
+    }
+  }, [session]);
   
   // Settings view states
   const [selectedSettingsPage, setSelectedSettingsPage] = useState<"profile" | "privacy" | "chats" | "notifications" | "help">("profile");
@@ -169,90 +186,28 @@ export function App() {
   const [callHistory, setCallHistory] = useState<CallLog[]>([]);
 
   // Status updates states
-  const [statuses, setStatuses] = useState<StatusUpdate[]>([
-    {
-      id: "status-sarah",
-      userId: "user-sarah",
-      username: "sarah_j",
-      displayName: "Sarah Jenkins",
-      avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuDaNicjQ2uU_2o1X50ieyztYRbIUcQHB_ElE_GIUhymbQcLgx5HcGsFS6E_d-aodrm3mcv9Vc8bxgl3C-aqtiqmL3wiU8JJXi2kFEN9dHcJpyl-fZU0gmTNeKOn_6fbApAd28RnL782ybMTIgwLQNE-Tmb-vB9u8rOevFkujYbH8eGiVgZReepROh9FIGncrsFg2DU1oNdbKsoByP3Ec2bE3il4C400i2On-N6QwjEU3cMjzUloIvFZ",
-      time: "10:45 AM",
-      updates: [
-        { type: "text", content: "Working on the new design system! 🚀" },
-        { type: "text", content: "Tailwind v4 is absolutely amazing!" }
-      ],
-      viewed: false
-    },
-    {
-      id: "status-design",
-      userId: "user-design",
-      username: "design_team",
-      displayName: "Design Team Sync",
-      avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuArk495R1WV2-mzZZmaYiBQARHXHB7nRXv0l4sb1NjqZ8Omb9aLxB8mXrvJ_F_DI4PrMJY_eoINdTvrx9D6Ln-pxWMrZDFvcZSRUjYtHGEdmHp3MaW3WVEkcbdM2W2xrA5KsO1vHpjEHG16cEkGfGVMD-MdwA5wn7lHbTXPAhzoUFu5HnCtgUxstUF1OHLCqfFN9o9xeGKqtK75XdUiVQrjVYBon5q07ELdLtQngt-BQE2iCTK80UeV",
-      time: "9:12 AM",
-      updates: [
-        { type: "text", content: "Prototype design files are ready for review." }
-      ],
-      viewed: false
-    },
-    {
-      id: "status-mike",
-      userId: "user-mike",
-      username: "mike_t",
-      displayName: "Mike Thompson",
-      avatarUrl: "https://lh3.googleusercontent.com/aida-public/AB6AXuAw3k7iPIh2ASkC-VP4QSdl5nOmOTBVK67zmxhHkYKOkUZjEKhkx4i7S7ovBsBy0It8LuNUVoQtzKe1elhapm42Q0o5gLyCUHaF5rAdIE8JHCGMna05XXfHFXCO927Op4BGLrtyyZU_A2izQfK16ugPtGGcF0JzLGE08CExskfKdDyzUBrj5oWSGRTyUTb1WMi0fyrNtTr5duYbkQDcmN8uM3dQ0g4Skza94kodApxp863epm7nGSUj",
-      time: "Yesterday",
-      updates: [
-        { type: "text", content: "Out of office for the weekend! 🏕️" }
-      ],
-      viewed: true
-    }
-  ]);
+  const [statuses, setStatuses] = useState<StatusUpdate[]>([]);
   const [selectedStatus, setSelectedStatus] = useState<StatusUpdate | null>(null);
   const [activeStatusIndex, setActiveStatusIndex] = useState(0);
   const [showAddStatusModal, setShowAddStatusModal] = useState(false);
   const [newStatusText, setNewStatusText] = useState("");
+  const [newStatusFile, setNewStatusFile] = useState<File | null>(null);
 
-  // Channels mock data
-  const [selectedChannel, setSelectedChannel] = useState<any | null>(null);
-  const channelsList = [
-    {
-      id: "ch-whatsapp",
-      name: "WhatsApp News",
-      avatar: "chat",
-      description: "Official announcements, updates, and feature rollouts from the WhatsApp team.",
-      messages: [
-        { id: "ch-m1", content: "Welcome to the WhatsApp News official channel! You'll receive important release updates here.", ts: Date.now() - 3600000 * 28 },
-        { id: "ch-m2", content: "📣 We are introducing support for custom color themes. Explore dynamic indigo interfaces starting today!", ts: Date.now() - 3600000 * 2 }
-      ]
-    },
-    {
-      id: "ch-vite",
-      name: "Vite JS Updates",
-      avatar: "hub",
-      description: "Development updates, community plugins, and tools in the Vite workspace ecosystem.",
-      messages: [
-        { id: "ch-m3", content: "Vite 6 is now generally available! Experience the next generation of fast builds.", ts: Date.now() - 3600000 * 18 }
-      ]
-    }
-  ];
+  // Dynamic channels and communities list states
+  const [channels, setChannels] = useState<BroadcastChannel[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState<BroadcastChannel | null>(null);
+  const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
+  const [newChannelName, setNewChannelName] = useState("");
+  const [newChannelDesc, setNewChannelDesc] = useState("");
+  const [newChannelAvatar, setNewChannelAvatar] = useState("groups");
+  const [channelPostText, setChannelPostText] = useState("");
 
-  // Communities mock data
-  const [selectedCommunity, setSelectedCommunity] = useState<any | null>(null);
-  const communitiesList = [
-    {
-      id: "comm-design",
-      name: "Design Community",
-      description: "Collaborate on prototypes, UX research, style systems, and layouts.",
-      groups: ["Core UI Sync", "Material Tokens Forum", "Creative Feedback Showcase"]
-    },
-    {
-      id: "comm-dev",
-      name: "Development Guild",
-      description: "System design, peer reviews, signaling code architecture, and WebRTC.",
-      groups: ["Vite & React Hub", "Mongoose DB Schemas", "WebSockets Lab"]
-    }
-  ];
+  const [communities, setCommunities] = useState<Community[]>([]);
+  const [selectedCommunity, setSelectedCommunity] = useState<Community | null>(null);
+  const [showCreateCommunityModal, setShowCreateCommunityModal] = useState(false);
+  const [newCommunityName, setNewCommunityName] = useState("");
+  const [newCommunityDesc, setNewCommunityDesc] = useState("");
+  const [newCommunityGroupStr, setNewCommunityGroupStr] = useState("");
 
   const addCallLog = useCallback((uid: string, name: string, type: "voice" | "video", direction: "incoming" | "outgoing" | "missed") => {
     const newLog: CallLog = {
@@ -425,6 +380,26 @@ export function App() {
       });
     });
 
+    sock.on("connect", () => {
+      sock.emit("status:sync", { chattedUserIds: chattedUserIdsRef.current });
+    });
+
+    sock.on("channels:list", (list: BroadcastChannel[]) => {
+      setChannels(list);
+    });
+
+    sock.on("communities:list", (list: Community[]) => {
+      setCommunities(list);
+    });
+
+    sock.on("status:list", (list: StatusUpdate[]) => {
+      setStatuses(list);
+    });
+
+    sock.on("status:created", () => {
+      sock.emit("status:sync", { chattedUserIds: chattedUserIdsRef.current });
+    });
+
     sock.on("signal:receive", async (pkt: SignalReceive) => {
       const { fromUserId, fromUsername, fromDisplayName, fromAvatarUrl, envelope } = pkt;
 
@@ -578,6 +553,13 @@ export function App() {
       sock.disconnect();
     };
   }, [session, addCallLog]);
+
+  // Sync statuses on activeNav or chatted users change
+  useEffect(() => {
+    if (session && socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit("status:sync", { chattedUserIds });
+    }
+  }, [activeNav, chattedUserIds, session]);
 
   /* ─── TTL cleanup ─── */
   useEffect(() => {
@@ -971,39 +953,110 @@ export function App() {
   }
 
   const handleAddStatus = () => {
-    if (!newStatusText.trim() || !session) return;
-    const myId = session.user.userId;
-    setStatuses((prev) => {
-      const existing = prev.find((s) => s.userId === myId);
-      if (existing) {
-        return [
-          {
-            ...existing,
-            time: "Just now",
-            updates: [...existing.updates, { type: "text", content: newStatusText.trim() }],
-            viewed: false
-          },
-          ...prev.filter((s) => s.userId !== myId)
-        ];
+    if (!session) return;
+    
+    let type: "text" | "image" | "video" = "text";
+    let content = newStatusText.trim();
+    
+    if (newStatusFile) {
+      if (newStatusFile.type.startsWith("image/")) {
+        type = "image";
+      } else if (newStatusFile.type.startsWith("video/")) {
+        type = "video";
       } else {
-        return [
-          {
-            id: `status-me-${Date.now()}`,
-            userId: myId,
-            username: session.user.username,
-            displayName: "My Status",
-            avatarUrl: session.user.avatarUrl,
-            time: "Just now",
-            viewed: false,
-            updates: [{ type: "text", content: newStatusText.trim() }]
-          },
-          ...prev
-        ];
+        alert("Only image and video files are supported for status updates!");
+        return;
       }
-    });
-    setNewStatusText("");
-    setShowAddStatusModal(false);
+      
+      if (newStatusFile.size > 10 * 1024 * 1024) {
+        alert("Media size exceeds 10MB limit.");
+        return;
+      }
+      
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64Data = reader.result as string;
+        socketRef.current?.emit("status:create", {
+          type,
+          content: base64Data,
+          caption: content || undefined
+        });
+        setNewStatusText("");
+        setNewStatusFile(null);
+        setShowAddStatusModal(false);
+        // Instant sync request
+        socketRef.current?.emit("status:sync", { chattedUserIds: chattedUserIdsRef.current });
+      };
+      reader.onerror = () => {
+        alert("Failed to read status file.");
+      };
+      reader.readAsDataURL(newStatusFile);
+    } else {
+      if (!content) return;
+      socketRef.current?.emit("status:create", {
+        type,
+        content
+      });
+      setNewStatusText("");
+      setNewStatusFile(null);
+      setShowAddStatusModal(false);
+      // Instant sync request
+      socketRef.current?.emit("status:sync", { chattedUserIds: chattedUserIdsRef.current });
+    }
   };
+
+  const handleCreateChannel = () => {
+    if (!newChannelName.trim() || !session) return;
+    socketRef.current?.emit("channel:create", {
+      name: newChannelName.trim(),
+      description: newChannelDesc.trim(),
+      avatar: newChannelAvatar
+    });
+    setNewChannelName("");
+    setNewChannelDesc("");
+    setShowCreateChannelModal(false);
+  };
+
+  const handlePostToChannel = () => {
+    if (!selectedChannel || !channelPostText.trim() || !session) return;
+    socketRef.current?.emit("channel:post", {
+      channelId: selectedChannel.id,
+      content: channelPostText.trim()
+    });
+    setChannelPostText("");
+  };
+
+  const handleCreateCommunity = () => {
+    if (!newCommunityName.trim() || !session) return;
+    const groups = newCommunityGroupStr
+      .split(",")
+      .map((g) => g.trim())
+      .filter((g) => g.length > 0);
+    socketRef.current?.emit("community:create", {
+      name: newCommunityName.trim(),
+      description: newCommunityDesc.trim(),
+      groups
+    });
+    setNewCommunityName("");
+    setNewCommunityDesc("");
+    setNewCommunityGroupStr("");
+    setShowCreateCommunityModal(false);
+  };
+
+  // Keep selected channel and community in sync with updated lists
+  useEffect(() => {
+    if (selectedChannel) {
+      const match = channels.find((c) => c.id === selectedChannel.id);
+      if (match) setSelectedChannel(match);
+    }
+  }, [channels]);
+
+  useEffect(() => {
+    if (selectedCommunity) {
+      const match = communities.find((c) => c.id === selectedCommunity.id);
+      if (match) setSelectedCommunity(match);
+    }
+  }, [communities]);
 
   /* Computed lists */
   const activeMessages = useMemo(() => {
@@ -1607,6 +1660,13 @@ export function App() {
           <>
             <header className="h-16 flex items-center justify-between px-6 border-b border-outline-variant bg-surface-container-low/40">
               <h1 className="font-headline-lg text-[22px] font-bold text-on-surface">Channels</h1>
+              <button
+                onClick={() => setShowCreateChannelModal(true)}
+                className="p-1.5 hover:bg-surface-container rounded-full text-on-surface-variant/80 hover:text-on-surface transition-colors"
+                title="Create Channel"
+              >
+                <span className="material-symbols-outlined text-[20px]">add_circle</span>
+              </button>
             </header>
             
             <div className="flex-1 overflow-y-auto chat-scroll py-1 bg-surface-container-low/10">
@@ -1615,21 +1675,28 @@ export function App() {
               </div>
               
               <div className="flex flex-col mt-2">
-                {channelsList.map((ch) => (
-                  <div
-                    key={ch.id}
-                    onClick={() => setSelectedChannel(ch)}
-                    className={`flex items-center px-4 py-3.5 cursor-pointer border-b border-outline-variant/10 transition-colors ${selectedChannel?.id === ch.id ? "bg-surface-container" : "hover:bg-surface-container-low/60"}`}
-                  >
-                    <div className="w-11 h-11 bg-primary-container/10 border border-primary/20 rounded-xl flex items-center justify-center text-primary shrink-0">
-                      <span className="material-symbols-outlined text-2xl">{ch.avatar}</span>
-                    </div>
-                    <div className="ml-3 flex-1 min-w-0">
-                      <h3 className="font-semibold text-on-surface text-body-md truncate">{ch.name}</h3>
-                      <p className="text-[12px] text-on-surface-variant truncate mt-0.5">{ch.description}</p>
-                    </div>
+                {channels.length === 0 ? (
+                  <div className="text-center text-xs text-on-surface-variant/60 py-12 px-6">
+                    <span className="material-symbols-outlined text-4xl text-on-surface-variant/30 mb-2 block">groups</span>
+                    No active channels yet.<br />Click the plus icon above to create one.
                   </div>
-                ))}
+                ) : (
+                  channels.map((ch) => (
+                    <div
+                      key={ch.id}
+                      onClick={() => setSelectedChannel(ch)}
+                      className={`flex items-center px-4 py-3.5 cursor-pointer border-b border-outline-variant/10 transition-colors ${selectedChannel?.id === ch.id ? "bg-surface-container" : "hover:bg-surface-container-low/60"}`}
+                    >
+                      <div className="w-11 h-11 bg-primary-container/10 border border-primary/20 rounded-xl flex items-center justify-center text-primary shrink-0">
+                        <span className="material-symbols-outlined text-2xl">{ch.avatar}</span>
+                      </div>
+                      <div className="ml-3 flex-1 min-w-0">
+                        <h3 className="font-semibold text-on-surface text-body-md truncate">{ch.name}</h3>
+                        <p className="text-[12px] text-on-surface-variant truncate mt-0.5">{ch.description}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </>
@@ -1640,6 +1707,13 @@ export function App() {
           <>
             <header className="h-16 flex items-center justify-between px-6 border-b border-outline-variant bg-surface-container-low/40">
               <h1 className="font-headline-lg text-[22px] font-bold text-on-surface">Communities</h1>
+              <button
+                onClick={() => setShowCreateCommunityModal(true)}
+                className="p-1.5 hover:bg-surface-container rounded-full text-on-surface-variant/80 hover:text-on-surface transition-colors"
+                title="Create Community"
+              >
+                <span className="material-symbols-outlined text-[20px]">add_circle</span>
+              </button>
             </header>
 
             <div className="flex-1 overflow-y-auto chat-scroll py-1 bg-surface-container-low/10">
@@ -1648,21 +1722,28 @@ export function App() {
               </div>
 
               <div className="flex flex-col mt-2">
-                {communitiesList.map((comm) => (
-                  <div
-                    key={comm.id}
-                    onClick={() => setSelectedCommunity(comm)}
-                    className={`flex items-center px-4 py-3.5 cursor-pointer border-b border-outline-variant/10 transition-colors ${selectedCommunity?.id === comm.id ? "bg-surface-container" : "hover:bg-surface-container-low/60"}`}
-                  >
-                    <div className="w-11 h-11 bg-secondary-container/10 border border-secondary/20 rounded-xl flex items-center justify-center text-secondary shrink-0">
-                      <span className="material-symbols-outlined text-2xl">hub</span>
-                    </div>
-                    <div className="ml-3 flex-1 min-w-0">
-                      <h3 className="font-semibold text-on-surface text-body-md truncate">{comm.name}</h3>
-                      <p className="text-[12px] text-on-surface-variant truncate mt-0.5">{comm.description}</p>
-                    </div>
+                {communities.length === 0 ? (
+                  <div className="text-center text-xs text-on-surface-variant/60 py-12 px-6">
+                    <span className="material-symbols-outlined text-4xl text-on-surface-variant/30 mb-2 block">hub</span>
+                    No active communities yet.<br />Click the plus icon above to create one.
                   </div>
-                ))}
+                ) : (
+                  communities.map((comm) => (
+                    <div
+                      key={comm.id}
+                      onClick={() => setSelectedCommunity(comm)}
+                      className={`flex items-center px-4 py-3.5 cursor-pointer border-b border-outline-variant/10 transition-colors ${selectedCommunity?.id === comm.id ? "bg-surface-container" : "hover:bg-surface-container-low/60"}`}
+                    >
+                      <div className="w-11 h-11 bg-secondary-container/10 border border-secondary/20 rounded-xl flex items-center justify-center text-secondary shrink-0">
+                        <span className="material-symbols-outlined text-2xl">hub</span>
+                      </div>
+                      <div className="ml-3 flex-1 min-w-0">
+                        <h3 className="font-semibold text-on-surface text-body-md truncate">{comm.name}</h3>
+                        <p className="text-[12px] text-on-surface-variant truncate mt-0.5">{comm.description}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </>
@@ -1772,10 +1853,22 @@ export function App() {
                   </div>
                 </div>
                 
-                <h2 className="font-headline-xl text-3xl font-bold text-on-surface mb-2">WhatsApp for Windows</h2>
-                <p className="max-w-md text-on-surface-variant/80 leading-relaxed mb-6 text-body-md">
-                  Send and receive messages without keeping your phone online. Use WhatsApp on up to 4 linked devices and 1 phone at the same time.
+                <h2 className="font-headline-xl text-3xl font-bold text-on-surface mb-2">Zaply for Windows</h2>
+                <p className="max-w-md text-on-surface-variant/80 leading-relaxed mb-4 text-body-md">
+                  Send and receive messages in real-time with direct, signaled WebRTC calling and zero persistent database logs.
                 </p>
+                <div className="bg-surface-container-low border border-outline-variant/60 rounded-2xl p-4 max-w-md mb-6 text-left text-xs text-on-surface-variant leading-relaxed space-y-2.5">
+                  <p className="font-bold text-primary text-center text-sm">🛡️ Security & Privacy Dashboard</p>
+                  <div>
+                    <span className="font-bold text-on-surface">End-to-End WebSocket Chat:</span> Messages are sent instantly over secure WebSockets.
+                  </div>
+                  <div>
+                    <span className="font-bold text-on-surface">Zero Persistent Database Logs:</span> To guarantee privacy, chat logs, media, and statuses are kept strictly in server RAM or local storage, and never written to a database.
+                  </div>
+                  <div>
+                    <span className="font-bold text-on-surface">Secure WebRTC Calls:</span> Direct audio/video calling streaming directly between devices.
+                  </div>
+                </div>
                 
                 <div className="flex flex-col items-center gap-3">
                   <button
@@ -1786,7 +1879,7 @@ export function App() {
                   </button>
                   <div className="flex items-center gap-1.5 text-on-surface-variant/60 text-label-sm">
                     <span className="material-symbols-outlined text-[16px]">lock</span>
-                    Your personal messages are end-to-end encrypted
+                    Your connection is private and secured.
                   </div>
                 </div>
 
@@ -2050,13 +2143,43 @@ export function App() {
                   ></div>
                 </div>
 
-                {/* Status central content */}
-                <div className="z-10 max-w-lg px-8 text-center text-white flex flex-col justify-center items-center h-full">
-                  <div className="p-8 rounded-3xl bg-primary/20 backdrop-blur-md border border-white/10 shadow-2xl">
-                    <h2 className="text-headline-lg font-headline-lg font-bold leading-snug">
-                      {selectedStatus.updates[activeStatusIndex].content}
-                    </h2>
-                  </div>
+                 {/* Status central content */}
+                <div className="z-10 max-w-lg px-8 text-center text-white flex flex-col justify-center items-center h-full w-full">
+                  {selectedStatus.updates[activeStatusIndex].type === "image" ? (
+                    <div className="status-media-wrapper flex flex-col items-center">
+                      <img
+                        className="status-media-content"
+                        src={selectedStatus.updates[activeStatusIndex].content}
+                        alt="Status"
+                      />
+                      {selectedStatus.updates[activeStatusIndex].caption && (
+                        <p className="mt-4 bg-black/60 px-4 py-2 rounded-xl text-body-md font-semibold backdrop-blur-sm max-w-sm">
+                          {selectedStatus.updates[activeStatusIndex].caption}
+                        </p>
+                      )}
+                    </div>
+                  ) : selectedStatus.updates[activeStatusIndex].type === "video" ? (
+                    <div className="status-media-wrapper flex flex-col items-center">
+                      <video
+                        className="status-media-content"
+                        src={selectedStatus.updates[activeStatusIndex].content}
+                        autoPlay
+                        playsInline
+                        controls={false}
+                      />
+                      {selectedStatus.updates[activeStatusIndex].caption && (
+                        <p className="mt-4 bg-black/60 px-4 py-2 rounded-xl text-body-md font-semibold backdrop-blur-sm max-w-sm">
+                          {selectedStatus.updates[activeStatusIndex].caption}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-8 rounded-3xl bg-primary/20 backdrop-blur-md border border-white/10 shadow-2xl">
+                      <h2 className="text-headline-lg font-headline-lg font-bold leading-snug">
+                        {selectedStatus.updates[activeStatusIndex].content}
+                      </h2>
+                    </div>
+                  )}
                 </div>
 
                 {/* Status Reply bar */}
@@ -2125,21 +2248,53 @@ export function App() {
                 </header>
                 
                 <div className="flex-1 overflow-y-auto chat-scroll px-8 py-6 space-y-4 bg-surface-container-low/40">
-                  {selectedChannel.messages.map((m: any) => (
-                    <div key={m.id} className="flex justify-start">
-                      <div className="bg-surface-container-lowest text-on-surface border border-outline-variant/30 px-4 py-3 rounded-2xl rounded-tl-none shadow-sm max-w-xl">
-                        <p className="text-body-md whitespace-pre-wrap">{m.content}</p>
-                        <div className="text-[10px] text-on-surface-variant/50 mt-1 text-right">
-                          {new Date(m.ts).toLocaleDateString()}
+                  {selectedChannel.messages.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center py-12 text-on-surface-variant/60 text-xs italic">
+                      No broadcast updates posted yet.
+                    </div>
+                  ) : (
+                    selectedChannel.messages.map((m: any) => (
+                      <div key={m.id} className="flex justify-start">
+                        <div className="bg-surface-container-lowest text-on-surface border border-outline-variant/30 px-4 py-3 rounded-2xl rounded-tl-none shadow-sm max-w-xl">
+                          <p className="text-body-md whitespace-pre-wrap">{m.content}</p>
+                          <div className="text-[10px] text-on-surface-variant/50 mt-1 text-right">
+                            {new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
                 
-                <div className="p-4 bg-surface-container-lowest border-t border-outline-variant/60 flex justify-center shrink-0">
-                  <span className="text-label-sm text-on-surface-variant/60 italic">This is a read-only broadcast channel</span>
-                </div>
+                {selectedChannel.creatorId === session.user.userId ? (
+                  <div className="h-20 shrink-0 flex items-center gap-3 px-6 py-4 border-t border-outline-variant/60 bg-surface-container-lowest">
+                    <div className="flex-1 bg-surface-container-low rounded-xl px-4 py-2 border border-transparent focus-within:border-primary/50 focus-within:bg-surface-container-lowest transition-all">
+                      <input
+                        className="w-full bg-transparent border-none text-body-md focus:outline-none placeholder:text-on-surface-variant/40"
+                        value={channelPostText}
+                        onChange={(e) => setChannelPostText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            handlePostToChannel();
+                          }
+                        }}
+                        placeholder="Broadcast a message to this channel..."
+                      />
+                    </div>
+                    <button
+                      onClick={handlePostToChannel}
+                      className="w-12 h-12 bg-primary hover:bg-primary-container text-on-primary rounded-full shadow-lg active:scale-95 transition-all flex items-center justify-center shrink-0"
+                      title="Broadcast message"
+                    >
+                      <span className="material-symbols-outlined text-2xl">send</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-surface-container-lowest border-t border-outline-variant/60 flex justify-center shrink-0">
+                    <span className="text-label-sm text-on-surface-variant/60 italic">This is a read-only broadcast channel</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2155,7 +2310,7 @@ export function App() {
                 </span>
                 <h2 className="font-headline-lg text-[22px] font-bold text-on-surface">Community Hub</h2>
                 <p className="max-w-xs text-on-surface-variant text-body-md mt-1.5 leading-relaxed">
-                  Organize sub-discussion categories, directories, and link related WhatsApp groups under one parent community.
+                  Organize sub-discussion categories, directories, and link related Zaply groups under one parent community.
                 </p>
               </div>
             ) : (
@@ -2226,7 +2381,7 @@ export function App() {
                     />
                   </label>
                   <p className="text-on-surface-variant text-body-md text-center max-w-xs">
-                    This avatar photo is visible to your linked WhatsApp contacts.
+                    This avatar photo is visible to your linked Zaply contacts.
                   </p>
                 </div>
 
@@ -2265,7 +2420,7 @@ export function App() {
                       <p className="font-semibold text-body-lg text-on-surface">{session.user.displayName}</p>
                     )}
                     <p className="mt-3 text-[11px] text-on-surface-variant leading-relaxed">
-                      This is not your pin or password. This name is visible to your WhatsApp contacts.
+                      This is not your pin or password. This name is visible to your Zaply contacts.
                     </p>
                   </div>
 
@@ -2355,12 +2510,96 @@ export function App() {
                       <span className="material-symbols-outlined text-on-surface-variant/50 text-sm">arrow_forward_ios</span>
                     </div>
 
-                    <div className="flex items-center justify-between p-4 hover:bg-surface-container-low/40 transition-colors cursor-pointer">
+                    <div className="p-5 border-t border-outline-variant/15 flex flex-col gap-3">
                       <div>
-                        <p className="font-semibold text-body-md text-on-surface">Status</p>
-                        <p className="text-[11px] text-on-surface-variant">My contacts</p>
+                        <p className="font-semibold text-body-md text-on-surface">Status Privacy Settings</p>
+                        <p className="text-[11px] text-on-surface-variant mt-0.5">Control who can see your status updates.</p>
                       </div>
-                      <span className="material-symbols-outlined text-on-surface-variant/50 text-sm">arrow_forward_ios</span>
+                      
+                      <div className="flex flex-col gap-2 mt-1">
+                        <label className="flex items-center gap-3 cursor-pointer text-body-md">
+                          <input
+                            type="radio"
+                            name="statusPrivacyMode"
+                            checked={statusPrivacyMode === "all"}
+                            onChange={async () => {
+                              setStatusPrivacyMode("all");
+                              const u = await updateProfile(session.token, { statusPrivacyMode: "all", statusPrivacyUsers: statusPrivacyUsers });
+                              setSession({ ...session, user: { ...session.user, ...u } });
+                            }}
+                            className="text-primary focus:ring-primary w-4.5 h-4.5"
+                          />
+                          <span>My Contacts (All Chats)</span>
+                        </label>
+                        
+                        <label className="flex items-center gap-3 cursor-pointer text-body-md">
+                          <input
+                            type="radio"
+                            name="statusPrivacyMode"
+                            checked={statusPrivacyMode === "share-with"}
+                            onChange={async () => {
+                              setStatusPrivacyMode("share-with");
+                              const u = await updateProfile(session.token, { statusPrivacyMode: "share-with", statusPrivacyUsers: statusPrivacyUsers });
+                              setSession({ ...session, user: { ...session.user, ...u } });
+                            }}
+                            className="text-primary focus:ring-primary w-4.5 h-4.5"
+                          />
+                          <span>Only Share With...</span>
+                        </label>
+
+                        <label className="flex items-center gap-3 cursor-pointer text-body-md">
+                          <input
+                            type="radio"
+                            name="statusPrivacyMode"
+                            checked={statusPrivacyMode === "hide-from"}
+                            onChange={async () => {
+                              setStatusPrivacyMode("hide-from");
+                              const u = await updateProfile(session.token, { statusPrivacyMode: "hide-from", statusPrivacyUsers: statusPrivacyUsers });
+                              setSession({ ...session, user: { ...session.user, ...u } });
+                            }}
+                            className="text-primary focus:ring-primary w-4.5 h-4.5"
+                          />
+                          <span>Hide From...</span>
+                        </label>
+                      </div>
+
+                      {statusPrivacyMode !== "all" && (
+                        <div className="mt-3 p-4 bg-surface-container rounded-xl border border-outline-variant/40 space-y-2">
+                          <p className="text-xs font-bold text-primary uppercase tracking-wide">
+                            Select Contacts ({statusPrivacyMode === "share-with" ? "Whitelist" : "Blacklist"})
+                          </p>
+                          <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1 chat-scroll">
+                            {contacts.length === 0 ? (
+                              <p className="text-[11px] text-on-surface-variant/60 italic text-center py-2">No contacts found to select.</p>
+                            ) : (
+                              contacts.map((c) => {
+                                const isSelected = statusPrivacyUsers.includes(c.userId);
+                                return (
+                                  <label key={c.userId} className="flex items-center justify-between p-2 rounded-lg hover:bg-surface-container-low cursor-pointer transition-colors text-xs">
+                                    <span className="font-semibold text-on-surface">{getResolvedName(c)}</span>
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={async (e) => {
+                                        let nextUsers = [...statusPrivacyUsers];
+                                        if (e.target.checked) {
+                                          if (!nextUsers.includes(c.userId)) nextUsers.push(c.userId);
+                                        } else {
+                                          nextUsers = nextUsers.filter((id) => id !== c.userId);
+                                        }
+                                        setStatusPrivacyUsers(nextUsers);
+                                        const u = await updateProfile(session.token, { statusPrivacyMode, statusPrivacyUsers: nextUsers });
+                                        setSession({ ...session, user: { ...session.user, ...u } });
+                                      }}
+                                      className="rounded text-primary focus:ring-primary w-4 h-4"
+                                    />
+                                  </label>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2481,41 +2720,84 @@ export function App() {
 
       {/* ─── Call Overlay (Preserves calls functions) ─── */}
       {(inCall || incomingFrom) && (
-        <div className="fixed inset-0 bg-black/90 z-50 flex flex-col items-center justify-center gap-6 p-6 select-none animate-in fade-in duration-300">
-          <div className="text-center text-white">
-            <span className="material-symbols-outlined text-5xl text-primary animate-bounce">phone_in_talk</span>
-            <p className="text-lg font-bold mt-3">
-              {incomingFrom ? `Incoming call from ${contacts.find((u) => u.userId === incomingFrom)?.displayName ?? incomingFrom}` : `Calling ${selectedUser?.displayName ?? ""}`}
-            </p>
-            <p className="text-sm opacity-60 mt-1">WebRTC Session Active</p>
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-xl z-50 flex flex-col items-center justify-between py-12 px-6 select-none animate-in fade-in duration-300">
+          
+          {/* Caller Details Header */}
+          <div className="text-center flex flex-col items-center gap-3">
+            <div className="calling-pulse-container mb-2">
+              <div className="calling-pulse-ring"></div>
+              <div className="calling-pulse-ring"></div>
+              <div className="calling-pulse-ring"></div>
+              <div className="calling-avatar-wrapper flex items-center justify-center bg-primary">
+                {selectedUser?.avatarUrl ? (
+                  <img className="w-full h-full object-cover" src={selectedUser.avatarUrl} alt="" />
+                ) : (
+                  <span className="text-white text-3xl font-bold uppercase">
+                    {initials(selectedUser?.displayName || "Call")}
+                  </span>
+                )}
+              </div>
+            </div>
+            
+            <h2 className="text-white text-2xl font-headline-lg font-bold tracking-tight">
+              {incomingFrom 
+                ? `Incoming call from ${contacts.find((u) => u.userId === incomingFrom)?.displayName ?? "Someone"}` 
+                : `${selectedUser?.displayName ?? "Connecting..."}`}
+            </h2>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 bg-primary rounded-full animate-ping"></span>
+              <p className="text-primary-fixed-dim text-xs font-semibold tracking-wider uppercase">
+                {incomingFrom ? "Ringing..." : "WebRTC Session Active"}
+              </p>
+            </div>
           </div>
           
-          <div className="flex gap-6 max-w-3xl w-full justify-center">
-            <div className="relative aspect-[3/4] w-64 bg-black border-2 border-primary rounded-2xl overflow-hidden shadow-2xl">
+          {/* Video / Soundwave Canvas */}
+          <div className="flex gap-6 max-w-3xl w-full justify-center items-center my-6 flex-wrap md:flex-nowrap">
+            {/* Local Video Stream */}
+            <div className="relative aspect-[3/4] w-48 md:w-56 bg-surface-container-highest border-2 border-primary/40 rounded-2xl overflow-hidden shadow-2xl">
               <video ref={localVidRef} autoPlay playsInline muted className="w-full h-full object-cover transform -scale-x-100" />
-              <span className="absolute bottom-3 left-3 bg-black/40 text-white text-xs px-2 py-1 rounded-md">You</span>
+              <span className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold uppercase px-2 py-1 rounded-md">You</span>
             </div>
-            <div className="relative aspect-[3/4] w-[350px] bg-black border-2 border-outline-variant/20 rounded-2xl overflow-hidden shadow-2xl">
+            
+            {/* Remote Video / Soundwave Stream */}
+            <div className="relative aspect-[3/4] w-64 md:w-[320px] bg-surface-container-highest border-2 border-outline-variant/30 rounded-2xl overflow-hidden shadow-2xl flex items-center justify-center">
               <video ref={remoteVidRef} autoPlay playsInline className="w-full h-full object-cover" />
-              <span className="absolute bottom-3 left-3 bg-black/40 text-white text-xs px-2 py-1 rounded-md">Remote</span>
+              
+              {/* Soundwave Visualizer Overlay shown during calls */}
+              <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center opacity-0 hover:opacity-100 transition-opacity gap-2">
+                <div className="soundwave-container">
+                  <div className="soundwave-bar"></div>
+                  <div className="soundwave-bar"></div>
+                  <div className="soundwave-bar"></div>
+                  <div className="soundwave-bar"></div>
+                  <div className="soundwave-bar"></div>
+                  <div className="soundwave-bar"></div>
+                </div>
+                <span className="text-[10px] text-white/70 font-semibold tracking-widest uppercase mt-2">Active Stream Visualizer</span>
+              </div>
+              
+              <span className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] font-bold uppercase px-2 py-1 rounded-md">Remote Stream</span>
             </div>
           </div>
           
-          <div className="flex gap-4">
+          {/* Controls Panel */}
+          <div className="flex gap-4 items-center">
             {incomingFrom && (
               <button
-                className="bg-primary hover:bg-primary-container text-on-primary font-semibold px-8 py-3 rounded-full transition-all shadow-lg active:scale-95 flex items-center gap-2"
+                className="bg-primary hover:bg-primary-container text-on-primary font-bold px-8 py-3.5 rounded-full transition-all shadow-lg active:scale-95 flex items-center gap-2"
                 onClick={() => void doCall(true)}
               >
-                <span className="material-symbols-outlined">call</span>
+                <span className="material-symbols-outlined text-lg">call</span>
                 Accept Call
               </button>
             )}
+            
             <button
-              className="bg-error hover:bg-red-700 text-on-error font-semibold px-8 py-3 rounded-full transition-all shadow-lg active:scale-95 flex items-center gap-2"
+              className="bg-error hover:bg-red-700 text-on-error font-bold px-8 py-3.5 rounded-full transition-all shadow-lg active:scale-95 flex items-center gap-2"
               onClick={() => endCall()}
             >
-              <span className="material-symbols-outlined">call_end</span>
+              <span className="material-symbols-outlined text-lg">call_end</span>
               End Connection
             </button>
           </div>
@@ -2629,7 +2911,7 @@ export function App() {
             <header className="h-16 flex items-center justify-between px-6 border-b border-outline-variant bg-surface-container-low/40">
               <h2 className="font-bold text-body-lg text-on-surface">Post Status Update</h2>
               <button
-                onClick={() => setShowAddStatusModal(false)}
+                onClick={() => { setShowAddStatusModal(false); setNewStatusFile(null); }}
                 className="p-1 hover:bg-surface-container rounded-full text-on-surface-variant flex items-center justify-center"
               >
                 <span className="material-symbols-outlined">close</span>
@@ -2639,16 +2921,162 @@ export function App() {
             <div className="p-6 space-y-4">
               <textarea
                 className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-3 text-body-md text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary focus:outline-none min-h-24 resize-none"
-                placeholder="What's on your mind? (e.g. Off to code! 🧑‍💻)"
+                placeholder={newStatusFile ? "Add status caption..." : "What's on your mind? (e.g. Off to code! 🧑‍💻)"}
                 value={newStatusText}
                 onChange={(e) => setNewStatusText(e.target.value)}
               />
+
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 justify-center border border-dashed border-outline-variant hover:border-primary rounded-xl py-4 cursor-pointer text-xs text-on-surface-variant hover:text-primary transition-all">
+                  <span className="material-symbols-outlined text-lg">attach_file</span>
+                  <span className="truncate max-w-xs">{newStatusFile ? `Media: ${newStatusFile.name}` : "Attach Photo / Video Status"}</span>
+                  <input
+                    type="file"
+                    accept="image/*,video/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) setNewStatusFile(f);
+                    }}
+                  />
+                </label>
+                {newStatusFile && (
+                  <button
+                    onClick={() => setNewStatusFile(null)}
+                    className="text-[11px] text-error font-bold self-end"
+                  >
+                    Remove media
+                  </button>
+                )}
+              </div>
               
               <button
                 onClick={handleAddStatus}
                 className="w-full bg-primary hover:bg-primary-container text-on-primary font-semibold py-2.5 rounded-xl shadow-md transition-all active:scale-95 text-body-md"
               >
                 Post Status
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Create Channel Modal ─── */}
+      {showCreateChannelModal && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-6 animate-in fade-in duration-200 select-none"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowCreateChannelModal(false);
+          }}
+        >
+          <div className="w-full max-w-md bg-surface-container-lowest border border-outline-variant rounded-2xl shadow-2xl overflow-hidden">
+            <header className="h-16 flex items-center justify-between px-6 border-b border-outline-variant bg-surface-container-low/40">
+              <h2 className="font-bold text-body-lg text-on-surface">Create New Channel</h2>
+              <button
+                onClick={() => setShowCreateChannelModal(false)}
+                className="p-1 hover:bg-surface-container rounded-full text-on-surface-variant flex items-center justify-center"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </header>
+            
+            <div className="p-6 space-y-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Channel Name</label>
+                <input
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  placeholder="e.g. Technology Updates"
+                  value={newChannelName}
+                  onChange={(e) => setNewChannelName(e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Description</label>
+                <textarea
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none min-h-16 resize-none"
+                  placeholder="What is this channel about?"
+                  value={newChannelDesc}
+                  onChange={(e) => setNewChannelDesc(e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Icon Symbol Name</label>
+                <input
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  placeholder="e.g. groups, campaign, hub, chat"
+                  value={newChannelAvatar}
+                  onChange={(e) => setNewChannelAvatar(e.target.value)}
+                />
+              </div>
+              
+              <button
+                onClick={handleCreateChannel}
+                className="w-full bg-primary hover:bg-primary-container text-on-primary font-semibold py-2.5 rounded-xl shadow-md transition-all active:scale-95 text-body-md"
+              >
+                Create Channel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Create Community Modal ─── */}
+      {showCreateCommunityModal && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-6 animate-in fade-in duration-200 select-none"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowCreateCommunityModal(false);
+          }}
+        >
+          <div className="w-full max-w-md bg-surface-container-lowest border border-outline-variant rounded-2xl shadow-2xl overflow-hidden">
+            <header className="h-16 flex items-center justify-between px-6 border-b border-outline-variant bg-surface-container-low/40">
+              <h2 className="font-bold text-body-lg text-on-surface">Create New Community</h2>
+              <button
+                onClick={() => setShowCreateCommunityModal(false)}
+                className="p-1 hover:bg-surface-container rounded-full text-on-surface-variant flex items-center justify-center"
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </header>
+            
+            <div className="p-6 space-y-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Community Name</label>
+                <input
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  placeholder="e.g. Developers Guild"
+                  value={newCommunityName}
+                  onChange={(e) => setNewCommunityName(e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Description</label>
+                <textarea
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none min-h-16 resize-none"
+                  placeholder="What is this community for?"
+                  value={newCommunityDesc}
+                  onChange={(e) => setNewCommunityDesc(e.target.value)}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-bold text-on-surface-variant uppercase">Subgroups (comma separated)</label>
+                <input
+                  className="w-full bg-surface-container-low border border-outline-variant/60 rounded-xl px-4 py-2 text-body-md text-on-surface focus:border-primary focus:outline-none"
+                  placeholder="e.g. React Forum, API Review, Deployment"
+                  value={newCommunityGroupStr}
+                  onChange={(e) => setNewCommunityGroupStr(e.target.value)}
+                />
+              </div>
+              
+              <button
+                onClick={handleCreateCommunity}
+                className="w-full bg-primary hover:bg-primary-container text-on-primary font-semibold py-2.5 rounded-xl shadow-md transition-all active:scale-95 text-body-md"
+              >
+                Create Community
               </button>
             </div>
           </div>

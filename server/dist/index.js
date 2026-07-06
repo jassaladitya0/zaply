@@ -178,7 +178,15 @@ app.post("/auth/register", async (req, res) => {
         }
         const user = await createAccount({ phone, username, password, displayName });
         const token = signToken({ userId: user.userId, username: user.username });
-        return res.status(201).json({ token, user });
+        return res.status(201).json({
+            token,
+            user: {
+                ...user,
+                theme: "sand",
+                statusPrivacyMode: "all",
+                statusPrivacyUsers: []
+            }
+        });
     }
     catch (error) {
         const message = error instanceof Error ? error.message : "register failed";
@@ -230,7 +238,9 @@ app.post("/auth/login", async (req, res) => {
             username: account.username,
             displayName: account.displayName,
             avatarUrl: account.avatarUrl,
-            theme: account.theme
+            theme: account.theme,
+            statusPrivacyMode: account.statusPrivacyMode,
+            statusPrivacyUsers: account.statusPrivacyUsers
         }
     });
 });
@@ -290,7 +300,9 @@ app.patch("/me/profile", async (req, res) => {
         const user = await updateProfile(auth.userId, {
             displayName: req.body?.displayName,
             avatarUrl: req.body?.avatarUrl,
-            theme: req.body?.theme
+            theme: req.body?.theme,
+            statusPrivacyMode: req.body?.statusPrivacyMode,
+            statusPrivacyUsers: req.body?.statusPrivacyUsers
         });
         // Update active socket data & broadcast update to all connected clients
         const userSockets = await io.in(auth.userId).fetchSockets();
@@ -310,6 +322,18 @@ app.patch("/me/profile", async (req, res) => {
     }
 });
 const sessionsByUserId = new Map();
+const activeStatuses = new Map();
+const activeChannels = new Map();
+const activeCommunities = new Map();
+function cleanupStatuses() {
+    const now = Date.now();
+    const TTL_STATUS = 24 * 60 * 60 * 1000;
+    for (const [userId, status] of activeStatuses.entries()) {
+        if (now - status.timestamp > TTL_STATUS) {
+            activeStatuses.delete(userId);
+        }
+    }
+}
 function cleanupExpiredEnvelope(envelope) {
     const ttl = 24 * 60 * 60 * 1000;
     return {
@@ -347,6 +371,94 @@ io.on("connection", (socket) => {
     sessionsByUserId.get(userId).add(socket.id);
     socket.join(userId);
     io.emit("presence:update", { userId, online: true });
+    // Send initial list of channels and communities
+    socket.emit("channels:list", Array.from(activeChannels.values()));
+    socket.emit("communities:list", Array.from(activeCommunities.values()));
+    socket.on("status:sync", async ({ chattedUserIds }) => {
+        cleanupStatuses();
+        const result = [];
+        for (const [statusUserId, status] of activeStatuses.entries()) {
+            if (statusUserId === userId) {
+                result.push(status);
+                continue;
+            }
+            if (!chattedUserIds.includes(statusUserId)) {
+                continue;
+            }
+            const posterAccount = await getAccountById(statusUserId);
+            if (!posterAccount)
+                continue;
+            const privacyMode = posterAccount.statusPrivacyMode || "all";
+            const privacyUsers = posterAccount.statusPrivacyUsers || [];
+            if (privacyMode === "hide-from" && privacyUsers.includes(userId)) {
+                continue;
+            }
+            if (privacyMode === "share-with" && !privacyUsers.includes(userId)) {
+                continue;
+            }
+            result.push(status);
+        }
+        socket.emit("status:list", result);
+    });
+    socket.on("status:create", ({ type, content, caption }) => {
+        cleanupStatuses();
+        let userStatus = activeStatuses.get(userId);
+        if (!userStatus) {
+            userStatus = {
+                id: `status-user-${userId}-${Date.now()}`,
+                userId,
+                username,
+                displayName: socket.data.displayName || username,
+                avatarUrl: socket.data.avatarUrl || "",
+                time: "Just now",
+                timestamp: Date.now(),
+                updates: []
+            };
+        }
+        else {
+            userStatus.timestamp = Date.now();
+            userStatus.time = "Just now";
+            userStatus.displayName = socket.data.displayName || username;
+            userStatus.avatarUrl = socket.data.avatarUrl || "";
+        }
+        userStatus.updates.push({ type, content, caption });
+        activeStatuses.set(userId, userStatus);
+        io.emit("status:created", { userId });
+    });
+    socket.on("channel:create", ({ name, description, avatar }) => {
+        const newChan = {
+            id: `channel-${Date.now()}`,
+            name,
+            description,
+            creatorId: userId,
+            avatar,
+            messages: []
+        };
+        activeChannels.set(newChan.id, newChan);
+        io.emit("channels:list", Array.from(activeChannels.values()));
+    });
+    socket.on("channel:post", ({ channelId, content }) => {
+        const channel = activeChannels.get(channelId);
+        if (channel && channel.creatorId === userId) {
+            channel.messages.push({
+                id: `msg-${Date.now()}`,
+                content,
+                ts: Date.now()
+            });
+            io.emit("channels:list", Array.from(activeChannels.values()));
+        }
+    });
+    socket.on("community:create", ({ name, description, groups }) => {
+        const newComm = {
+            id: `community-${Date.now()}`,
+            name,
+            description,
+            creatorId: userId,
+            groups
+        };
+        activeCommunities.set(newComm.id, newComm);
+        io.emit("communities:list", Array.from(activeCommunities.values()));
+    });
     socket.on("signal:send", (raw) => {
         const envelope = cleanupExpiredEnvelope(raw);
         const targetSocketIds = sessionsByUserId.get(envelope.toUserId);

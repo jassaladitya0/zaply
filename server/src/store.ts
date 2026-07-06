@@ -28,6 +28,8 @@ export async function createAccount(input: {
     displayName: input.displayName,
     passwordHash: hashPassword(input.password),
     theme: "sand",
+    statusPrivacyMode: "all",
+    statusPrivacyUsers: [],
     createdAt: Date.now()
   };
 
@@ -76,8 +78,14 @@ export async function searchUsers(query: string, exceptUserId: string): Promise<
 
 export async function updateProfile(
   userId: string,
-  patch: { displayName?: string; avatarUrl?: string; theme?: Account["theme"] }
-): Promise<PublicUser> {
+  patch: {
+    displayName?: string;
+    avatarUrl?: string;
+    theme?: Account["theme"];
+    statusPrivacyMode?: Account["statusPrivacyMode"];
+    statusPrivacyUsers?: string[];
+  }
+): Promise<PublicUser & { theme: Account["theme"]; statusPrivacyMode: Account["statusPrivacyMode"]; statusPrivacyUsers: string[] }> {
   const account = await AccountModel.findOne({ userId });
   if (!account) {
     throw new Error("User not found");
@@ -92,9 +100,21 @@ export async function updateProfile(
   if (patch.theme) {
     account.theme = patch.theme;
   }
+  if (patch.statusPrivacyMode) {
+    account.statusPrivacyMode = patch.statusPrivacyMode;
+  }
+  if (Array.isArray(patch.statusPrivacyUsers)) {
+    account.statusPrivacyUsers = patch.statusPrivacyUsers;
+  }
 
   await account.save();
-  return toPublicUser(account.toObject() as Account);
+  const obj = account.toObject() as Account;
+  return {
+    ...toPublicUser(obj),
+    theme: obj.theme,
+    statusPrivacyMode: obj.statusPrivacyMode,
+    statusPrivacyUsers: obj.statusPrivacyUsers
+  };
 }
 
 export function toPublicUser(account: Account): PublicUser {

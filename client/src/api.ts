@@ -85,9 +85,15 @@ export async function searchUsers(query: string, token: string): Promise<PublicU
 
 export async function updateProfile(
   token: string,
-  patch: { displayName?: string; avatarUrl?: string; theme?: Theme }
-): Promise<PublicUser> {
-  const result = await request<{ user: PublicUser }>(
+  patch: {
+    displayName?: string;
+    avatarUrl?: string;
+    theme?: Theme;
+    statusPrivacyMode?: "all" | "share-with" | "hide-from";
+    statusPrivacyUsers?: string[];
+  }
+): Promise<PublicUser & { theme?: Theme; statusPrivacyMode?: "all" | "share-with" | "hide-from"; statusPrivacyUsers?: string[] }> {
+  const result = await request<{ user: PublicUser & { theme?: Theme; statusPrivacyMode?: "all" | "share-with" | "hide-from"; statusPrivacyUsers?: string[] } }>(
     "/me/profile",
     {
       method: "PATCH",

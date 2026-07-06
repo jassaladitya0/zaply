@@ -7,6 +7,8 @@ const accountSchema = new Schema({
     passwordHash: { type: String, required: true },
     avatarUrl: { type: String, required: false },
     theme: { type: String, enum: ["sand", "forest", "sunset"], default: "sand", required: true },
+    statusPrivacyMode: { type: String, enum: ["all", "share-with", "hide-from"], default: "all", required: true },
+    statusPrivacyUsers: { type: [String], default: [], required: true },
     createdAt: { type: Number, required: true }
 }, {
     versionKey: false,
